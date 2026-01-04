@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepx-dock"
-version = "1.1.0"
+version = "0.9.6"
 authors = [
     {name = "Whenhui Duan", email = "duanw@tsinghua.com"},
     {name = "Yong Xu", email = "yongxu@tsinghua.com"},

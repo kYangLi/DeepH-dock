@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 import json
+import shutil
 
 
 def clean_filename(filename):
@@ -74,7 +75,10 @@ def scan_examples_and_generate_capabilities():
     examples_dir = docs_dir / '..' / 'examples'
     capabilities_dir = docs_dir / 'capabilities'
     
-    capabilities_dir.mkdir(exist_ok=True)
+    if capabilities_dir.is_dir():
+        shutil.rmtree(capabilities_dir)
+    
+    capabilities_dir.mkdir(exist_ok=False)
     
     entries = []
     

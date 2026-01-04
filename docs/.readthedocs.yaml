@@ -12,9 +12,7 @@ build:
     jobs:
         pre_build:
             - pip install ".[docs]"
-            - cd docs
-            - if [ -d "capabilities/" ]; then rm -r capabilities/; fi
-            - python gen_capabilities.py
+            - cd docs && python gen_capabilities.py
 
 # Build documentation in the docs/ directory with Sphinx
 sphinx:
