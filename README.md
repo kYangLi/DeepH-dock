@@ -67,7 +67,16 @@ Commands:
 If you use this code in your academic work, please cite:
 
 ```bash
-TBA
+@article{li2026deeph-pack,
+    title={DeepH-pack: A general-purpose neural network package for deep-learning electronic structure calculations},
+    author={Yang Li, Yanzhen Wang, Boheng Zhao, Xiaoxun Gong, Yuxiang Wang, Zechen Tang, Zixu Wang, Zilong Yuan, Jialin Li, Minghui Sun, Zezhou Chen, Honggeng Tao, Baochun Wu, Yuhang Yu, He Li, Felipe H. da Jornada, Wenhui Duan, and Yong Xu},
+    journal={TBA},
+    volume={TBA},
+    number={TBA},
+    pages={TBA},
+    year={2026},
+    publisher={TBA}
+}
 ```
 
 ## Application Scenarios
