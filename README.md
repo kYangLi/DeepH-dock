@@ -20,31 +20,13 @@ At the core of DeepH-dock is **a unified and flexible interface layer that seaml
 
 ## Core Features
 
-### 🧬 Multi-Software Compatibility
+**🧬 Multi-Software Compatibility:**: Seamlessly bridges major DFT packages (e.g., VASP, QE, OpenMX) with the DeepH deep learning family and downstream tight-binding toolchains.
 
-- **DFT Software Support**: OpenMX, VASP, Quantum ESPRESSO, FHI-aims, SIESTA, PySCF, ABACUS, etc.
-- **Deep Learning Frameworks**: Neural network model interfaces including DeepH, DeepH-E3, DeepH-2, etc.
-- **Tight-Binding Toolchain**: WannierTools, HopTB, HopCP, Z2Pack, etc.
+**⚡ High-Performance Computational Core:** Implements high-performance algorithms for automated structure generation, overlap matrix calculation, Hamiltonian symmetrization, and fast diagonalization via KPM/Lanczos.
 
-### ⚡ High-Performance Computational Core
+**🔄 Standardized Workflows:** Streamlines the full research lifecycle with automated pipelines for DFT data generation, preprocessing, post-analysis, and custom composite workflows. 
 
-- **Fast Diagonalization Algorithms**: Implementation of efficient numerical methods such as KPM and Lanczos
-- **Structure Generation Algorithms**: Automatic generation of crystal/molecular configurations
-- **Hamiltonian Processing**: Symmetrization, error evaluation, and other general operations
-- **Overlap Matrix Processing**: Calculation of overlap matrix under given basis and atomic structures
-
-### 🔄 Standardized Workflows
-
-- **Data Generation**: Automated DFT computational data generation pipelines
-- **Preprocessing**: Standardized feature extraction and data cleaning
-- **Postprocessing**: Result analysis and visualization tools
-- **Composite Workflows**: Support for custom computational pipelines
-
-### 🛠️ Utility Toolkit
-
-- **Parallel Computing**: Multi-level parallel support including MPI and Loky
-- **Format Conversion**: Various data format conversion tools (.h5, .petsc, .csc, etc.)
-- **Validation Tools**: Data integrity and consistency verification
+**🛠️ Utility Toolkit:** Empowers developers with a robust set of tools for multi-level parallel computing (MPI/Loky), versatile format conversion, and rigorous data integrity validation.
 
 ## Quick Start
 
@@ -77,17 +59,13 @@ Commands:
   ls       List all available commands.
 ```
 
-## Project Architecture
+## Citation
 
-DeepH-dock is structured as a modular system with clearly defined functional responsibilities:
+If you use this platform, please cite:
 
-- **Analysis Module** (`analyze/`): Data analysis, visualization, and post-processing utilities
-- **Computation Module** (`compute/`): Core physical quantity calculations and algorithmic implementations
-- **Conversion Module** (`convert/`): Data format transformations and interoperability between different software packages
-- **Design Module** (`design/`): Material structure generation, manipulation, and design workflows
-- **HPRO Integration** (`hpro/`): Specialized interfaces and utilities for a modified [`HPRO`](https://github.com/Xiaoxun-Gong/HPRO) library operations
-
-This modular design ensures clear separation of concerns while maintaining interoperability between components, enabling flexible and scalable computational workflows.
+```bash
+TBA
+```
 
 ## Application Scenarios
 
@@ -155,14 +133,6 @@ dock convert fhi-aims my-func
 The command's usage (arguments, options, help text) is entirely defined by the `click` decorators specified in `cli_args`. Please refer to the [official click documentation](https://click.palletsprojects.com/) for details on defining arguments and options.
 
 For additional details, refer to the [Development Guide](https://deeph-dock.readthedocs.io/en/latest/for_developers/development_guide.html).
-
-## Citation
-
-If you use this platform, please cite:
-
-```bash
-TBA
-```
 
 ## License
 
