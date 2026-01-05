@@ -226,10 +226,10 @@ Each HDF5 file contains the following keys:
 
 | Key | Shape | Description |
 | --- | ----- | ----------- |
-| `cell` | (3, 3) | Lattice vectors (to be confirmed) |
+| `cell` | (3, 3) | Lattice vectors |
 | `energy` | scalar | Total energy of the system |
 | `force` | (N, 3) | Forces on N atoms in x, y, z directions |
-| `stress` | (1, 6) | Stress tensor components in Voigt notation |
+| `stress` | (6,) | Stress tensor components in [Voigt notation](https://en.wikipedia.org/wiki/Voigt_notation) |
 
 #### Code Example: Reading Force Data
 
@@ -240,7 +240,7 @@ def read_force_data(filepath):
     """Read force field data from force.h5."""
     with h5py.File(filepath, 'r') as f:
         cell = f['cell'][:] if 'cell' in f else None
-        energy = f['energy'][()]
+        energy = f['energy'][()] if 'energy' in f else None
         force = f['force'][:]
         stress = f['stress'][:] if 'stress' in f else None
   
