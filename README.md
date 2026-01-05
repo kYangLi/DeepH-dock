@@ -60,8 +60,9 @@ Commands:
 ```
 
 ## Citation
+**Any and all use of this software, in whole or in part, should clearly acknowledge and link to this repository.**
 
-If you use this platform, please cite:
+If you use this code in your academic work, please cite:
 
 ```bash
 TBA
