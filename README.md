@@ -20,7 +20,7 @@ At the core of DeepH-dock is **a unified and flexible interface layer that seaml
 
 ## Core Features
 
-**🧬 Multi-Software Compatibility:**: Seamlessly bridges major DFT packages (e.g., SIESTA, QE, OpenMX, FHI-aims, ABACUS) with the DeepH deep learning family and downstream tight-binding toolchains.
+**🧬 Multi-Software Compatibility:** Seamlessly bridges major DFT packages (e.g., SIESTA, QE, OpenMX, FHI-aims, ABACUS) with the DeepH deep learning family and downstream tight-binding toolchains.
 
 **⚡ High-Performance Computational Core:** Implements high-performance algorithms for automated structure generation, overlap matrix calculation, Hamiltonian symmetrization, and fast diagonalization via KPM/Lanczos.
 
