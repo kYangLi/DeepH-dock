@@ -596,14 +596,24 @@ class AbacusReader:
                 num_nz_blocks = 0
                 orbit_cumsum = self.orbit_cumsum*(1+spinful_in)
                 orbit_quantity_list = self.orbit_quantity_list
+                atom_col_starts = orbit_cumsum[:-1]
+                atom_col_ends = orbit_cumsum[1:]
                 for i_atom in range(self.atoms_quantity):
-                    for j_atom in range(self.atoms_quantity):
-                        mat_block = mat_R[
-                            orbit_cumsum[i_atom]:orbit_cumsum[i_atom+1],
-                            orbit_cumsum[j_atom]:orbit_cumsum[j_atom+1]
-                        ]
-                        if mat_block.indptr[-1] == 0:
-                            continue
+                    start_row = orbit_cumsum[i_atom]
+                    end_row = orbit_cumsum[i_atom + 1]
+                    if mat_R.indptr[start_row] == mat_R.indptr[end_row]:
+                        continue
+                    start_ptr = mat_R.indptr[start_row]
+                    end_ptr = mat_R.indptr[end_row]
+                    nonzero_cols_in_ia_block = mat_R.indices[start_ptr:end_ptr]
+                    cols_expanded = nonzero_cols_in_ia_block[:, np.newaxis]
+                    #
+                    overlap_matrix = (cols_expanded >= atom_col_starts) & (
+                        cols_expanded < atom_col_ends
+                    )
+                    connected_ja_indices = np.where(np.any(overlap_matrix, axis=0))[0]
+                    #
+                    for j_atom in connected_ja_indices:
                         num_nz_blocks += 1
                         atom_pairs.append([R1, R2, R3, i_atom, j_atom])
                         chunk_shapes.append((orbit_quantity_list[i_atom], orbit_quantity_list[j_atom]))

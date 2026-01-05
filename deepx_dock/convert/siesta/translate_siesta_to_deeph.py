@@ -325,19 +325,34 @@ class SIESTAReader:
         hsx_name = f"{self.slabel}.{SIESTA_HSX_FILE_Extension}"
         siesta_hsx_path = self.siesta_path / hsx_name
         f = FortranFile(siesta_hsx_path, "r")
-        version = f.read_ints()  # version of siesta
+        version = f.read_ints()[0]  # version of HSX file
         if version > 2:
-            print(f"[warn] The HSX file version is {version}, which is not tested yet. BE CAREFUL!")
-        tmpt = f.read_ints()  # whether data is double precision
-        tmpt = f.read_ints()  # na_u, no_u, spin, species, nsc
+            print(f"WARN in {self.siesta_path}: The HSX file version is {version}, which is not tested yet. BE CAREFUL!")
+        is_dp = f.read_ints()[0]  # whether data is double precision
+        if is_dp == 0:
+            raise NotImplementedError(
+                "Only double-precision HSX files are supported."
+            )
+        tmpt = f.read_ints()  # na_u, no_u, spin, species, nscx, nscy, nscz
+        na_u = tmpt[0]
         assert self.nspin == tmpt[2], "The number of spin components is inconsistent."
         if self.nspin not in [1, 8]:
             raise NotImplementedError(
                 "Only non-spin-polarized and fully spin-polarized (SOC) calculations are supported."
             )
         nspecies = tmpt[3]
+        nsc = tmpt[4:7]
+        if np.allclose(nsc, np.array([1,1,1])):
+            print(f"WARN in {self.siesta_path}: The system appears to be a cluster! If you are calculating extended systems, please set `ForceAuxCell true` in your fdf file and run SIESTA again.")
         tmpt = f.read_reals()  # 0~8: lattice parameter/Bohr, 9: fermi level/au, 10: total charge, 11: electronic temperature
-        tmpt = f.read_ints()
+        tmpt = f.read_record(dtype=np.byte) # isc(nscx*nscy*nscz,3), xa(na_u,3)/Bohr in column-major, isa(na_u), lasto(na_u)
+        isc = np.frombuffer(tmpt[:4*3*nsc[0]*nsc[1]*nsc[2]], dtype=np.int32).reshape(nsc[0]*nsc[1]*nsc[2], 3)
+        tmpt = tmpt[4*3*nsc[0]*nsc[1]*nsc[2]:]
+        xa = np.frombuffer(tmpt[:8*3*na_u], dtype=np.float64).reshape(na_u, 3) * BOHR_TO_ANGSTROM
+        tmpt = tmpt[8*3*na_u:]
+        tmpt = np.frombuffer(tmpt[:], dtype=np.int32)
+        isa = tmpt[:na_u]
+        lasto = tmpt[na_u:2*na_u]
         tmpt = f.read_reals()
         for _ in range(nspecies):
             tmpt = f.read_ints()  # orbital infos of species
@@ -347,11 +362,15 @@ class SIESTAReader:
         assert len(numh) == self.orbits_quantity, f"The number of rows read from HSX file ({len(numh)}) is inconsistent with the number of orbitals ({self.orbits_quantity})."
         numh = np.cumsum(numh)
         numh = np.append(np.array([0]), numh)
-        listh = np.empty(0, dtype=int)
-        for _ in range(self.orbits_quantity):
-            listh = np.append(listh, f.read_ints())
+        listh = []
+        for i in range(self.orbits_quantity):
+            col_idx = f.read_ints()
+            listh.append(col_idx)
+            assert len(col_idx) == numh[i+1] - numh[i], f"The number of column indexes does not match ({len(col_idx)} != {numh[i+1] - numh[i]})."
+        listh = np.concatenate(listh)
         listh -= 1  # from 1-based to 0-based
         n_listh = len(listh)
+        assert n_listh == numh[-1], f"The number of matrix elements does not match ({n_listh} != {numh[-1]})."
         self.hamiltonians = np.empty(self.nspin * n_listh, dtype=np.float64)
         cur_pos = 0
         for _ in range(self.nspin):
@@ -367,6 +386,7 @@ class SIESTAReader:
             next_pos = cur_pos + len(ovlp_tmpt)
             self.overlaps[cur_pos:next_pos] = ovlp_tmpt
             cur_pos = next_pos
+        f.close()
         self.overlaps = [
             csr_matrix(
                 (self.overlaps, listh, numh),
@@ -374,7 +394,6 @@ class SIESTAReader:
             )
         ]
         self.hamiltonians *= HARTREE_TO_EV / 2
-        f.close()
         dup_hamiltonians = []  # stores nspin csr matrix of hamiltonians
         for ispin in range(self.nspin):
             dup_hamiltonians.append(
@@ -537,12 +556,17 @@ class SIESTAReader:
             "chunk_boundaries": self.matrix_info["chunk_boundaries"]
             * ((spinful + 1) ** 2),
         }
-        entries = [None] * len(data["atom_pairs"])
-        atom_pairs_order = data["atom_pairs"].tolist()
-        for k, v in value.items():
-            k = list(k)
-            index = atom_pairs_order.index(k)
-            entries[index] = v.reshape(-1)
+        ks = np.array(list(value.keys()), dtype=int)
+        if np.allclose(ks, data['atom_pairs']):
+            entries = [v.reshape(-1) for k, v in value.items()]
+        else:
+            print(f"WARN in {self.siesta_path}: The order of atom_pairs in {item} are not consistent with the ones in matrix_info. The atom_pairs will be reordered, which may take a long time ...")
+            entries = [None] * len(data["atom_pairs"])
+            atom_pairs_order = data["atom_pairs"].tolist()
+            for k, v in value.items():
+                k = list(k)
+                index = atom_pairs_order.index(k)
+                entries[index] = v.reshape(-1)
         data["entries"] = np.concatenate(entries)
         with h5py.File(file_path, "w") as fwh:
             for key, value in data.items():
