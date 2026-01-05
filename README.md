@@ -22,13 +22,13 @@ For the most comprehensive usage documentation, please visit [https://deeph-dock
 
 ## Core Features
 
-**🧬 Multi-Software Compatibility:** Seamlessly bridges major DFT packages (e.g., SIESTA, QE, OpenMX, FHI-aims, ABACUS) with the DeepH deep learning family and downstream tight-binding toolchains.
+- **Multi-Software Compatibility:** Seamlessly bridges major DFT packages (e.g., SIESTA, QE, OpenMX, FHI-aims, ABACUS) with the DeepH deep learning family and downstream tight-binding toolchains.
 
-**⚡ High-Performance Computational Core:** Implements high-performance algorithms for automated structure generation, overlap matrix calculation, Hamiltonian symmetrization, and fast diagonalization via KPM/Lanczos.
+- **High-Performance Computational Core:** Implements high-performance algorithms for automated structure generation, overlap matrix calculation, Hamiltonian symmetrization, and fast diagonalization via KPM/Lanczos.
 
-**🔄 Standardized Workflows:** Streamlines the full research lifecycle with automated pipelines for DFT data generation, preprocessing, post-analysis, and custom composite workflows. 
+- **Standardized Workflows:** Streamlines the full research lifecycle with automated pipelines for DFT data generation, preprocessing, post-analysis, and custom composite workflows. 
 
-**🛠️ Utility Toolkit:** Empowers developers with a robust set of tools for multi-level parallel computing (MPI/Loky), versatile format conversion, and rigorous data integrity validation.
+- **Utility Toolkit:** Empowers developers with a robust set of tools for multi-level parallel computing (MPI/Loky), versatile format conversion, and rigorous data integrity validation.
 
 ## Quick Start
 

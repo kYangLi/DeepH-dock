@@ -27,7 +27,7 @@ Features
 
             .. div:: sd-font-normal
 
-                Seamlessly works with major DFT software (`FHI-aims <https://www.fhi-aims.org>`_, `Quantum ESPRESSO <https://www.quantum-espresso.org>`_, `OpenMX <https://openmx-square.org>`_, etc.), deep learning models (DeepH series), and tight-binding toolchains, offering broad compatibility across computational materials science.
+                Seamlessly works with major DFT software (`FHI-aims <https://www.fhi-aims.org>`_, `SIESTA <https://siesta-project.org/>`_, `Quantum ESPRESSO <https://www.quantum-espresso.org>`_, `OpenMX <https://openmx-square.org>`_, etc.), deep learning models (DeepH series), and tight-binding toolchains, offering broad compatibility across computational materials science.
 
                 
 
