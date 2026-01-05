@@ -77,7 +77,6 @@ def scan_examples_and_generate_capabilities():
     
     if capabilities_dir.is_dir():
         shutil.rmtree(capabilities_dir)
-    
     capabilities_dir.mkdir(exist_ok=False)
     
     entries = []
