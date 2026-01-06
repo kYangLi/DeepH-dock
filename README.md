@@ -62,11 +62,24 @@ Commands:
 ```
 
 ## Citation
+
 **Any and all use of this software, in whole or in part, should clearly acknowledge and link to this repository.**
 
 If you use this code in your academic work, please cite:
 
-```bash
+[Li, Y., Wang, Y., Zhao, B., *et al*. DeepH-pack: A general-purpose neural network package for deep-learning electronic structure calculations. arXiv. (2026) (Submitted)](https://cmt-deeph-download-1311443801.cos.accelerate.myqcloud.com/DeepH-pack-2026.pdf)
+
+<!-- ```bash
+@article{li2026deeph-pack,
+    title={DeepH-pack: A general-purpose neural network package for deep-learning electronic structure calculations},
+    author={Yang Li, Yanzhen Wang, Boheng Zhao, Xiaoxun Gong, Yuxiang Wang, Zechen Tang, Zixu Wang, Zilong Yuan, Jialin Li, Minghui Sun, Zezhou Chen, Honggeng Tao, Baochun Wu, Yuhang Yu, He Li, Felipe H. da Jornada, Wenhui Duan, and Yong Xu},
+    journal={arXiv},
+    volume={Submitted...},
+    year={2026}
+}
+``` -->
+
+<!-- ```bash
 @article{li2026deeph-pack,
     title={DeepH-pack: A general-purpose neural network package for deep-learning electronic structure calculations},
     author={Yang Li, Yanzhen Wang, Boheng Zhao, Xiaoxun Gong, Yuxiang Wang, Zechen Tang, Zixu Wang, Zilong Yuan, Jialin Li, Minghui Sun, Zezhou Chen, Honggeng Tao, Baochun Wu, Yuhang Yu, He Li, Felipe H. da Jornada, Wenhui Duan, and Yong Xu},
@@ -77,7 +90,7 @@ If you use this code in your academic work, please cite:
     year={2026},
     publisher={TBA}
 }
-```
+``` -->
 
 ## Application Scenarios
 
