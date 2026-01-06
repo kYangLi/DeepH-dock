@@ -9,7 +9,7 @@ from scipy.sparse.linalg import eigsh
 from tqdm import tqdm
 from joblib import Parallel, delayed
 
-from deepx_dock.misc import read_json_file
+from deepx_dock.misc import read_json_file, read_poscar_file
 from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME
 from deepx_dock.CONSTANT import DEEPX_INFO_FILENAME
 from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
@@ -17,6 +17,43 @@ from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
 
 
 class HamiltonianObj:
+    """
+    Tight-binding Hamiltonian in the matrix form.
+    
+    This class constructs the Hamiltonian operator from the standard DeepH 
+    format data. The Hamiltonian and overlap matrix in real space (H(R) and S(R))
+    are constructed and can be Fourier transformed to the reciprocal space 
+    (H(k) and S(k)). The diagonalization of the Hamiltonian is also supported.
+    
+    Parameters
+    ----------
+    info_dir_path : str 
+        Path to the directory containing the POSCAR, info.json and overlap.h5.
+    
+    H_file_path : str (optional)
+        Path to the Hamiltonian file. Default: hamiltonian.h5 under `info_dir_path`.
+    
+    Properties:
+    ----------
+    lattice : np.array((3, 3), dtype=float)
+        Lattice vectors. Each row is a lattice vector.
+
+    reciprocal_lattice : np.array((3, 3), dtype=float)
+        Reciprocal lattice vectors. Each row is a reciprocal lattice vector.
+
+    Rijk_list : np.array((N_R, 3), dtype=int)
+        Lattice displacements for inter-cell hoppings.
+        The displacements are expressed in terms of the lattice vectors.
+        N_R is the number of displacements.
+
+    SR : np.array((N_R, N_b, N_b), dtype=float)
+        Overlap matrix in real space. SR[i, :, :] = S(Rijk_list[i, :]).
+        N_b is the number of basis functions in the unit cell (including the spin DOF if spinful is true).
+    
+    HR : np.array((N_R, N_b, N_b), dtype=float/complex)
+        Hamiltonian matrix in real space. HR[i, :, :] = H(Rijk_list[i, :]).
+        The dtype is float if spinful is false, otherwise the dtype is complex.
+    """
     def __init__(self, info_dir_path, H_file_path=None):
         self._get_necessary_data_path(info_dir_path, H_file_path)
         #
@@ -210,40 +247,18 @@ class HamiltonianObj:
 
     @staticmethod
     def _read_poscar(filename):
-        result = {}
-        with open(filename, 'r') as f:
-            lines = [line.strip() for line in f if line.strip()]
-        # ======================================================================
-        _scale_factor = float(lines[1])
-        # ----------------------------------------------------------------------
-        result["lattice"] = np.array(
-            [list(map(float, line.split())) for line in lines[2:5]]
-        ) * _scale_factor
-        # ----------------------------------------------------------------------
-        elem_type = lines[5].split()
-        assert elem_type[0].isalpha(), "Invalid POSCAR format, the 6th line should be elements"
-        elem_count = list(map(int, lines[6].split()))
-        
-        result["elements"] = [
-            elem for elem, n in zip(elem_type, elem_count) for _ in range(n)]
-        # ----------------------------------------------------------------------
-        _coord_type = lines[7].split()[0].lower()
-        result["coord_type"] = "direct" if _coord_type[0]=='d' else "cartesian"
-        # ----------------------------------------------------------------------
-        coord_start = 8
-        atom_quantity = sum(elem_count)
-        _coords = np.array([
-            list(map(float, line.split()[:3])) 
-            for line in lines[coord_start:coord_start+atom_quantity]
-        ])
-        if "direct" == result["coord_type"]:
-            result["frac_coords"] = _coords
-            result["cart_coords"] = (_coords @ result["lattice"])
-        else:
-            result["cart_coords"] = _coords
-            result["frac_coords"] = (_coords @ np.linalg.inv(result["lattice"]))
-        # ======================================================================
-        return result
+        result = read_poscar_file(filename)
+        elements = [
+            elem for elem, n in zip(
+                result["elements_unique"], result["elements_counts"]
+            ) for _ in range(n)
+        ]
+        return {
+            "lattice": result["lattice"],
+            "elements": elements,
+            "cart_coords": result["cart_coords"],
+            "frac_coords": result["frac_coords"],
+        }
     
     @staticmethod
     def _ft(k, Rs, MRs):

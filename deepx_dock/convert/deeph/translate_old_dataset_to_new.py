@@ -16,7 +16,7 @@ from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
 from deepx_dock.CONSTANT import DEEPX_DENSITY_MATRIX_FILENAME, DEEPX_VR_FILENAME
 from deepx_dock.CONSTANT import PERIODIC_TABLE_INDEX_TO_SYMBOL
 from deepx_dock.CONSTANT import PERIODIC_TABLE_SYMBOL_TO_INDEX
-from deepx_dock.misc import get_data_dir_lister
+from deepx_dock.misc import get_data_dir_lister, read_poscar_file
 
 DEEPX_NECESSARY_FILES = {DEEPX_POSCAR_FILENAME, DEEPX_INFO_FILENAME}
 
@@ -375,29 +375,13 @@ class OldDatasetTranslator:
     @staticmethod
     def _transfer_new_info_to_old(old_dir_path: Path, new_dir_path: Path):
         # Read in POSCAR
-        with open(new_dir_path / DEEPX_POSCAR_FILENAME, "r") as f:
-            lines = f.readlines()
-            # Scale for lattice vector and cartesian coordinates
-            scale = [float(x) for x in lines[1].split()]
-            scale = [scale[0], scale[0], scale[0]] if len(scale) == 1 else scale
-            assert scale[0] > 0.0 and scale[1] > 0.0 and scale[2] > 0.0, f"in {new_dir_path}/{DEEPX_POSCAR_FILENAME}, the second line must be positive, but got {scale}."
-            # Lattice vector
-            lat = np.array([[float(x) for x in line.split()[:3]] for line in lines[2:5]]).T
-            lat = np.array([vec * s for vec, s in zip(lat, scale)])
-            # Element symbols and number of atoms
-            elem_symbols_unique = lines[5].split()
-            elem_indices_unique = [PERIODIC_TABLE_SYMBOL_TO_INDEX[symbol] for symbol in elem_symbols_unique]
-            elem_counts = [int(num) for num in lines[6].split()]
-            assert len(elem_symbols_unique) == len(elem_counts), f"in {new_dir_path}/{DEEPX_POSCAR_FILENAME}, the 6th line (element symbols) must has the same length as the 7th line (number of atoms), but got {len(elem_symbols_unique)} and {len(elem_counts)}."
-            # Cartesian or Direct coordinates
-            coords_mode = "Cartesian" if (lines[7][0].lower() == 'c' or lines[7][0].lower() == 'k') else "Direct"
-            # Coordinates
-            assert len(lines) >= 8 + sum(elem_counts), f"in {new_dir_path}/{DEEPX_POSCAR_FILENAME}, the number of lines must be at least 8 + {sum(elem_counts)}, but got {len(lines)}."
-            coords = np.array([[float(x) for x in line.split()[:3]] for line in lines[8:8 + sum(elem_counts)]]).T
-            if coords_mode == "Cartesian":
-                coords = np.array([vec * s for vec, s in zip(coords, scale)])
-            else:
-                coords = lat @ coords
+        result = read_poscar_file(new_dir_path / DEEPX_POSCAR_FILENAME)
+        lat = result["lattice"].T
+        elem_symbols_unique = result["elements_unique"]
+        elem_counts = result["elements_counts"]
+        coords = result["cart_coords"].T
+        # Process POSCAR info
+        elem_indices_unique = [PERIODIC_TABLE_SYMBOL_TO_INDEX[symbol] for symbol in elem_symbols_unique]
         volume = np.linalg.det(lat)
         rlat = np.zeros((3,3), dtype=float)
         rlat[:, 0] = (2*np.pi) * np.cross(lat[:, 1],lat[:, 2]) / volume

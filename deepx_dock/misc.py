@@ -39,6 +39,7 @@ def read_poscar_file(file_path):
     # Element symbols and number of atoms
     elem_symbols_unique = lines[5].split()
     elem_counts = [int(num) for num in lines[6].split()]
+    assert elem_symbols_unique[0].isalpha(), "Invalid POSCAR format, the 6th line should be elements"
     assert len(elem_symbols_unique) == len(elem_counts), f"in {file_path}, the 6th line (element symbols) must has the same length as the 7th line (number of atoms), but got {len(elem_symbols_unique)} and {len(elem_counts)}."
     # Cartesian or Direct coordinates
     coords_mode = "Cartesian" if (lines[7][0].lower() == 'c' or lines[7][0].lower() == 'k') else "Direct"
