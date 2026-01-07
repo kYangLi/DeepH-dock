@@ -20,13 +20,24 @@ At the core of DeepH-dock is **a unified and flexible interface layer that seaml
 
 For the most comprehensive usage documentation, please visit [https://deeph-dock.readthedocs.io/en/latest/](https://deeph-dock.readthedocs.io/en/latest/).
 
+- [Core Features](#core-features)
+- [Quick Start](#quick-start)
+  - [Installation](#installation)
+  - [Basic Usage](#basic-usage)
+- [Citation](#citation)
+- [Application Scenarios](#application-scenarios)
+- [Contributing](#contributing)
+  - [Development Workflow for Contributors](#development-workflow-for-contributors)
+- [License](#license)
+- [Support \& Contact](#support--contact)
+
 ## Core Features
 
 - **Multi-Software Compatibility:** Seamlessly bridges major DFT packages (e.g., SIESTA, QE, OpenMX, FHI-aims, ABACUS) with the DeepH deep learning family and downstream tight-binding toolchains.
 
 - **High-Performance Computational Core:** Implements high-performance algorithms for automated structure generation, overlap matrix calculation, Hamiltonian symmetrization, and fast diagonalization via KPM/Lanczos.
 
-- **Standardized Workflows:** Streamlines the full research lifecycle with automated pipelines for DFT data generation, preprocessing, post-analysis, and custom composite workflows. 
+- **Standardized Workflows:** Streamlines the full research lifecycle with automated pipelines for DFT data generation, preprocessing, post-analysis, and custom composite workflows.
 
 - **Utility Toolkit:** Empowers developers with a robust set of tools for multi-level parallel computing (MPI/Loky), versatile format conversion, and rigorous data integrity validation.
 

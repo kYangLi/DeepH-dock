@@ -19,7 +19,7 @@ url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
 default = true
 ```
 
-## Create deeph python virtual environment
+## Create `deeph` python virtual environment
 
 Create `python 3.13` environments with `uv`:
 
