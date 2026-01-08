@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD033 -->
 # Installation & Setup
 
 ## Install UV
@@ -66,17 +67,53 @@ uv pip install -e .[docs]
 
 ## Commandline Auto-Completion
 
-Enable command auto-completion to save time and reduce errors:
+Set up intelligent tab completion to save time and reduce errors when using the `dock` command. After configuration, press <kbd>Tab</kbd> to auto-complete subcommands, options, and file paths while in the `deeph` environment.
+
+### Setup Instructions
+
+#### Add to Shell Configuration
+
+Paste the appropriate alias into your shell's config file:
+
+- **Bash** (`~/.bashrc`):
+
+    ```bash
+    alias act-deeph='source ${HOME}/.uvenv/deeph/bin/activate ; eval "$(_DOCK_COMPLETE=bash_source dock)"'
+    ```
+
+- **Zsh** (`~/.zshrc`):
+
+    ```bash
+    alias act-deeph='source ${HOME}/.uvenv/deeph/bin/activate ; eval "$(_DOCK_COMPLETE=zsh_source dock)"'
+    ```
+
+- **Fish** (`~/.config/fish/completions/dock.fish`):
+
+    ```bash
+    alias act-deeph='source ${HOME}/.uvenv/deeph/bin/activate ; _DOCK_COMPLETE=fish_source dock | source'
+    ```
+
+Restart your terminal session to reload the shell settings.
+
+#### Activate the Completion
+
+Execute this command in your terminal:
 
 ```bash
-# Bash
-alias uv-act-deeph='source ${HOME}/.uvenv/deeph/bin/activate ; eval "$(_DOCK_COMPLETE=bash_source dock)"'
-
-# Zsh
-alias uv-act-deeph='source ${HOME}/.uvenv/deeph/bin/activate ; eval "$(_DOCK_COMPLETE=zsh_source dock)"'
-
-# Fish
-alias uv-act-deeph='source ${HOME}/.uvenv/deeph/bin/activate ; _DOCK_COMPLETE=fish_source dock | source'
+act-deeph
 ```
 
-Add the corresponding line to your shell config file (`~/.bashrc`, `~/.zshrc`, or `~/.config/fish/completions/dock.fish`) for permanent setup. After reloading your shell, use `Tab` to auto-complete commands, options, and file paths.
+This will:
+
+- Activate the `deeph` Python virtual environment
+- Enable tab completion for `dock` in your current session
+
+### Using Auto-Completion
+
+1. Type `dock` followed by a space
+2. Press <kbd>Tab</kbd> to:
+   - View available subcommands/options
+   - Auto-complete partially typed arguments
+   - Suggest file paths when relevant
+
+> **Note**: Auto-completion persists only for the terminal session where `act-deeph` was executed. Re-run `act-deeph` in new sessions.
