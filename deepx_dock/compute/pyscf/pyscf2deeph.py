@@ -4,7 +4,7 @@ import re
 import collections
 import json
 import h5py
-import os
+import os, warnings
 
 from tqdm import tqdm
 
@@ -42,6 +42,16 @@ def BASIS_TRANS_PYSCF2WIKI(ll):
 def BASIS_TRANS_WIKI2PYSCF(ll):
     return np.argsort(BASIS_TRANS_PYSCF2WIKI(ll))
 
+def rebuild_kpt_grid(lattice, kpts):
+    # rebuild kpt grid to make sure it is compatible with lattice vectors
+    lat = lattice.T / (2 * np.pi)  # columns are lattice vectors
+    kpts_frac = kpts @ lat  # fractional coordinates
+    k_grid = []
+    for i in range(3):
+        unique_coords = np.unique(np.round(kpts_frac[:, i], decimals=6))
+        k_grid.append(len(unique_coords))
+    
+    return np.asarray(k_grid, dtype=int)
 
 class PySCFDataHooker:
     '''
@@ -76,8 +86,10 @@ class PySCFDataHooker:
         if not os.path.exists(self.deeph_path):
             os.makedirs(self.deeph_path)
         self.kpts = np.array([[0.0, 0.0, 0.0]])
+        self._org_kpts = np.array([[0.0, 0.0, 0.0]])
         self.rcut = rcut
-        self.exprot_S = export_S; self._Sk = None # (nkpts, nao, nao)
+        self.is_kpts_reset = False
+        self.export_S = export_S; self._Sk = None # (nkpts, nao, nao)
         self.export_H = export_H; self._Hk = None
         self.export_rho = export_rho; self._rhok = None
         self.export_r = export_r
@@ -93,7 +105,10 @@ class PySCFDataHooker:
                    'f': {'-3':(3,-3), '-2':(3,-2), '-1':(3,-1), '+0':(3,0),
                           '+1':(3,1), '+2':(3,2), '+3':(3,3)},}
 
-    def hook_kernel(self, mf):
+    def __call__(self, mf, kpt=None):
+        return self.hook_kernel(mf, kpt=kpt)
+
+    def hook_kernel(self, mf, kpt=None):
         '''hook the kernel function of mf object to collect data after calculation. must be called before mf.kernel()
 
         Args:
@@ -101,16 +116,26 @@ class PySCFDataHooker:
                 RKS/KRKS: Restricted closed-shell Kohn-Sham DFT, without spin polarization. \\
                 UKS/KUKS, ROKS/KROKS: Unrestricted Kohn-Sham DFT, with collinear spin polarization.\\
                 GKS/KGKS: Generalized Kohn-Sham DFT, with SOC and non-collinear spin polarization.
+            kpt: 
+                np.ndarray, shape (3,) of grid points to be calculated, or shape (nkpts, 3) of k-points list.
+                Default: None, use mf.kpts attribute.
         Returns:
             mf: the modified mf object with hooked kernel function
         '''
+        if hasattr(mf, 'is_hooked') and mf.is_hooked:
+            return mf
+        setattr(mf, 'is_hooked', False)
+
         # step 1. analyze cell to get structure and orbital infomation
-        self._analyze_info(mf)
+        self._analyze_info(mf, kpt=kpt)
+        # setup collector as callback function in order to collect 
+        # hamiltonian, overlap, density matrices.
+        mf.callback = self._collector
         
         # step 2. wrap the original kernel function
         old_kernel = mf.kernel
 
-        if self.exprot_S and not (self.export_H or self.export_rho):
+        if self.export_S and not (self.export_H or self.export_rho):
             raise Warning("Overlap matrix export is enabled, but neither Hamiltonian nor Density matrix export is enabled. \n" \
             "Please use PySCFDataHooker.dump_ovlp() method to dump overlap matrix separately. \n" \
             "Overlap matrix will not be dumped.")
@@ -129,24 +154,32 @@ class PySCFDataHooker:
                 self._Sk = [self._Sk]
                 self._rhok = [self._rhok]
             # ------------------------ #
-            self._spin_realspace_matrices_ift()
+            # for kpt reset case
+            if self.is_kpts_reset and self.is_periodic:
+                # recalc matrices at original kpts
+                self._Hk, self._Sk, self._rhok = self._recalc_mx_k(mf, self.kpts)
             # ------------------------ #
-            self._dump_info_json()
-            self._dump_poscar()
-            if self.export_H:
-                self._dump_H()
-            if self.exprot_S:
-                self._dump_S()
-            if self.export_rho:
-                self._dump_rho()
-            # print(self.__dict__)
+            self._transfer_and_dump()
         
         mf.kernel = new_kernel
+        mf.is_hooked = True
         return mf
     
-    def dump_ovlp(self, mf, return_S = False):
+    def dump(self, mf, kpt=None):
+        """ dump data if mf has been calculated already.
+        """
+        self._analyze_info(mf, kpt=kpt)
+        if self.is_periodic:
+            try:
+                self.fermi_energy = mf.get_fermi() * self.unit_trans_factor['energy']
+            except:
+                self.fermi_energy = np.max(np.asarray(mf.get_fermi())) * self.unit_trans_factor['energy']
+        self._Hk, self._Sk, self._rhok = self._recalc_mx_k(mf, self.kpts)
+        self._transfer_and_dump()
+    
+    def dump_ovlp(self, mf, kpt=None, return_S = False):
         '''calc and dump overlap matrix only '''
-        self._analyze_info(mf)
+        self._analyze_info(mf, kpt=kpt)
 
         if not self.is_periodic:
             _Sk = [mf.get_ovlp(self.mol)]
@@ -154,26 +187,55 @@ class PySCFDataHooker:
             _S = self._get_entries(_SR_dict, isspinful=0)
             self._dump_S(entries=_S)
         else:
-            _Sk = mf.get_ovlp(self.cell, kpt=mf.kpt)
+            # fix: PySCF uses Bohr unit for kpts, but self.kpts is in Angstrom unit
+            _Sk = mf.get_ovlp(self.cell, self.kpts * self.unit_trans_factor['length'])
             _SR_dict = self._get_realspace_matrices_ift(_Sk)
             _S = self._get_entries(_SR_dict, isspinful=0)
             self._dump_S(entries=_S)
         if return_S:
             return _S
 
-    def _analyze_info(self, mf):
+    def _analyze_info(self, mf, kpt=None):
         # judge pbc or molecular system, get cell and set unit transform factor
         self.is_periodic = self._judge_pbc_get_cell(mf) # kpts
+        self._reset_kpts(kpt=kpt) # reset kpts if necessary
         # get atomic info
         self._get_atom_orbital_info() # atoms_quantity, orbits_quantity, spinful, elements, elem_orb_map, basis_trans_index
         # get Rijk and fnna info
         self._get_Rijk_and_fnna() # R_ijk, fnna_quantity_list
-        self._judge_kpts_density(mf) # kpts grid
+        self._judge_kpts_density() # kpts grid
         self.matrix_info = self._get_pyscf_matrix_info() # atom_pairs, chunk_shapes, chunk_boundaries
 
-        # setup collector as callback function in order to collect 
-        # hamiltonian, overlap, density matrices.
-        mf.callback = self._collector
+    def _transfer_and_dump(self):
+        self._spin_realspace_matrices_ift()
+        # ------------------------ #
+        self._dump_info_json()
+        self._dump_poscar()
+        if self.export_H:
+            self._dump_H()
+        if self.export_S:
+            self._dump_S()
+        if self.export_rho:
+            self._dump_rho()
+        # print(self.__dict__)
+
+    def _reset_kpts(self, kpt=None, origin=False):
+        if kpt is None:
+            return
+        elif origin:
+            self.kpts = kpt
+            self.is_kpts_reset = False
+        else:
+            kpt = np.asarray(kpt)
+            if kpt.ndim == 1 and kpt.shape[0] == 3:
+                kpt = np.asarray(kpt, dtype=int)
+                self.kpts = self.cell.make_kpts(kpt)
+            elif kpt.ndim == 2 and kpt.shape[1] == 3:
+                self.kpts = kpt
+            else:
+                raise ValueError("kpt must be of shape (3,) or (nkpts, 3)")
+            self.kpts /= self.unit_trans_factor['length']
+            self.is_kpts_reset = True
 
     def _collector(self, envs:dict):
         ''' used as callback function to collect data
@@ -185,6 +247,35 @@ class PySCFDataHooker:
         self._Sk = envs['s1e']
         self._rhok = envs['dm']
         #TODO: what about r?
+
+    def _recalc_mx_k(self, mf, kpts):
+        ''' recalc matrices at given kpts'''
+        dm = mf.make_rdm1()
+        _Hk, _Sk, _rhok = None, None, None
+        if self.is_periodic:
+            # fix: PySCF uses Bohr unit for kpts, but input kpts is in Angstrom unit
+            kpts_bohr = kpts * self.unit_trans_factor['length']
+            if self.export_H:
+                _Hk = mf.get_hcore(self.cell, kpts_bohr)
+                _Hk += mf.get_veff(self.cell, dm, kpts=mf.kpts, kpts_band=kpts_bohr)
+            if self.export_S:
+                _Sk = mf.get_ovlp(self.cell, kpts_bohr)
+            if self.export_rho:
+                assert self.export_H and self.export_S, "To export density matrix, Hamiltonian and Overlap matrices must be exported too."
+                mo_energy, mo_coeff = mf.eig(_Hk, _Sk)
+                _rhok = mf.make_rdm1(mo_coeff=mo_coeff, mo_occ=mf.get_occ(mo_energy))
+        else:
+            if self.export_H:
+                _Hk = mf.get_hcore(self.mol)
+                _Hk += mf.get_veff(self.mol, dm)
+                _Hk = [_Hk]
+            if self.export_S:
+                _Sk = mf.get_ovlp(self.mol)
+                _Sk = [_Sk]
+            if self.export_rho:
+                _rhok = dm
+                _rhok = [_rhok]
+        return _Hk, _Sk, _rhok
     
     def _judge_pbc_get_cell(self, mf):
         # pbc or not(molecular)
@@ -198,8 +289,8 @@ class PySCFDataHooker:
             if hasattr(mf, 'kpts'):
                 self.kpts = np.asarray(mf.kpts)
             else:
-                raise Warning("No kpts attribute found in periodic structure mf object!!! \n " \
-                "set to Gamma point only.")
+                warnings.warn("No kpts attribute found in periodic structure mf object!!! \n " \
+                "Assuming Gamma-point calculation only.")
             self.lattice:np.ndarray = self.cell.lattice_vectors() * BOHR_TO_ANGSTROM
             self.cart_coords:np.ndarray = self.cell.atom_coords(LEN_UNIT)
             is_periodic = True
@@ -216,19 +307,20 @@ class PySCFDataHooker:
             raise ValueError("Cannot find cell or mol attribute in mf object.")
         
         self.kpts /= self.unit_trans_factor['length']
+        self._org_kpts = self.kpts.copy()
 
         return is_periodic
     
-    def _judge_kpts_density(self, mf):
+    def _judge_kpts_density(self):
         if not self.is_periodic or self.rcut is None:
             return
         else:
             # get k points grid from mf
-            kpt_grid = mf.kpt # tuple or np.ndarray of 3 integers
+            kpt_grid = rebuild_kpt_grid(self.lattice, self.kpts) # tuple or np.ndarray of 3 integers
             kpt_grid = np.array(kpt_grid, dtype=int)
             is_dense, suggest_kpt_grid = self.judge_kpt_density(self.lattice, kpt_grid, self.rcut)
             if not is_dense:
-                raise Warning(f"The k-point grid {kpt_grid} may be not dense enough for the cutoff radius {self.rcut} Angstrom. \n"
+                warnings.warn(f"The k-point grid {kpt_grid} may be not dense enough for the cutoff radius {self.rcut} Angstrom. \n"
                               "Please increase the k-point density to ensure accurate Fourier transform. \n"
                               "Suggested k-point grid: {}".format(suggest_kpt_grid))
 
