@@ -167,7 +167,7 @@ class PySCFDataHooker:
         if self.is_periodic:
             try:
                 self.fermi_energy = mf.get_fermi() * self.unit_trans_factor['energy']
-            except:
+            except Exception:
                 self.fermi_energy = np.max(np.asarray(mf.get_fermi())) * self.unit_trans_factor['energy']
         self._Hk, self._Sk, self._rhok = self._recalc_mx_k(mf, self.kpts)
         self._transfer_and_dump()
