@@ -115,7 +115,7 @@ Each HDF5 file contains the following keys:
 
 | Key | Shape | Description |
 | ----- | ------- | ------------- |
-| `atom_pairs` | (N, 5) | Integer matrix where N is the number of edges. Each row contains: `[R1, R2, R3, i_atom, j_atom]` defining which supercell the atom pair belongs to |
+| `atom_pairs` | (N, 5) | Integer matrix where N is the number of edges. Each row contains 5 integers: `[R1, R2, R3, i_atom, j_atom]`, representing a coupling between the $n1$-th atom in the central unit cell and the $n2$-th atom in the periodic image cell specified by the lattice vector indices $(i, j, k)$.  |
 | `chunk_boundaries` | (N+1,) | 1D integer array marking boundaries for each edge's data in the entries array |
 | `chunk_shapes` | (N, 2) | Integer matrix where each row gives the shape of the submatrix for the corresponding edge |
 | `entries` | (M,) | Flattened 1D array of floating-point values containing all matrix elements |
