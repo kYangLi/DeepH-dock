@@ -514,7 +514,10 @@ class PySCFDataHooker:
                 #TODO: to be implemented
                 # because it is confused that the shape of ovlp matrix is (2*nao, 2*nao)
                 # need further check 
-                pass
+                raise NotImplementedError(
+                    "Spin non-collinear case is not implemented: "
+                    "overlap matrix shape (2*nao, 2*nao) needs further handling."
+                )
         self.H *= HARTREE_TO_EV
 
     def _get_entries(self, mx_r_dict, isspinful):
