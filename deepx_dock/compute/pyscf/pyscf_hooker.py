@@ -7,14 +7,14 @@ import os, warnings
 import pyscf
 from pyscf.pbc import gto as pbcgto
 
-from functools import partial, wraps
+from functools import wraps
 
 from deepx_dock.compute.eigen.hamiltonian import HamiltonianObj
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME, DEEPX_OVERLAP_FILENAME
 from deepx_dock.CONSTANT import DEEPX_POSITION_MATRIX_FILENAME
 from deepx_dock.CONSTANT import DEEPX_DENSITY_MATRIX_FILENAME
 from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME, DEEPX_INFO_FILENAME
-from deepx_dock.CONSTANT import PERIODIC_TABLE_SYMBOL_TO_INDEX, PERIODIC_TABLE_INDEX_TO_SYMBOL
+from deepx_dock.CONSTANT import PERIODIC_TABLE_INDEX_TO_SYMBOL
 
 BOHR_TO_ANGSTROM = 0.529177249
 HARTREE_TO_EV = 27.2113845
@@ -88,17 +88,24 @@ class PySCFDataHooker:
         self.export_H = export_H; self._Hk = None
         self.export_rho = export_rho; self._rhok = None
         self.export_r = export_r
+        assert not export_r, "The extraction of position matrix is not supported yet!"
 
         self.fermi_energy = 0.0
         self.unit_trans_factor = {'length': BOHR_TO_ANGSTROM, 'energy': HARTREE_TO_EV}
 
         # in pyscf, the definition of spherical harmonics is string below:
-        self.lm = {'s': {'': (0, 0)},
-                   'p': {'x': (1, 1), 'y': (1, -1), 'z': (1, 0)},
-                   'd': {'xy': (2, -2), 'xz': (2, 1), 'yz': (2, -1),
-                         'x2-y2': (2, 2), 'z^2': (2, 0)},
-                   'f': {'-3':(3,-3), '-2':(3,-2), '-1':(3,-1), '+0':(3,0),
-                          '+1':(3,1), '+2':(3,2), '+3':(3,3)},}
+        self.lm = {
+            's': {'': (0, 0)},
+            'p': {'x': (1, 1), 'y': (1, -1), 'z': (1, 0)},
+            'd': {
+                'xy': (2, -2), 'xz': (2, 1), 'yz': (2, -1),
+                'x2-y2': (2, 2), 'z^2': (2, 0)
+            },
+            'f': {
+                '-3':(3,-3), '-2':(3,-2), '-1':(3,-1), '+0':(3,0),
+                '+1':(3,1), '+2':(3,2), '+3':(3,3)
+            },
+        }
 
     def __call__(self, mf, kpt=None):
         return self.hook_kernel(mf, kpt=kpt)
@@ -643,3 +650,4 @@ class PySCFDataHooker:
         else:
             matrix = matrix[transform_index1, :][:, transform_index2]
             return matrix
+

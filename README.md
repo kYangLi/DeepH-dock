@@ -15,9 +15,11 @@
 *Modular, extensible bridge between first-principles calculations and the DeepH method*
 </div>
 
-`DeepH-dock` is a **modular, extensible interface platform for quantum materials calculations, dedicated to building efficient and reliable bridges between first-principles calculations and the DeepH (deep learning Hamiltonian) method.** This platform integrates multiple density functional theory (DFT) software interfaces, supports DeepH predictions, and provides standardized data processing. **It also functions independently as a post-processing tool for DFT calculations.**
+*DeepH-dock* is a modular, extensible interface platform for quantum materials calculations, dedicated to building efficient and reliable bridges between first-principles calculations and the *DeepH (deep learning Hamiltonian) method*. This platform integrates multiple density functional theory (DFT) software interfaces, supports DeepH predictions, and provides standardized data processing. **It also functions independently as a post-processing tool for DFT calculations.**
 
-At the core of DeepH-dock is **a unified and flexible interface layer that seamlessly connects mainstream DFT packages with the DeepH workflow**, enabling users to generate and utilize deep learning-based Hamiltonians with minimal effort. DeepH-dock offers first-class support for heterogeneous computational environments, allowing researchers to orchestrate complex multi-software workflows through a consistent Python API.
+At the core of *DeepH-dock* is **a unified and flexible interface layer that seamlessly connects mainstream DFT packages with the DeepH workflow**, enabling users to generate and utilize deep learning-based Hamiltonians with minimal effort. DeepH-dock offers first-class support for heterogeneous computational environments, allowing researchers to orchestrate complex multi-software workflows through a consistent Python API.
+
+*DeepH-dock* also establishes a unified data format tailored for machine learning in materials science, facilitating efficient implementations of both force fields and electronic structure methods. please refer to [our documentation](https://deeph-dock.readthedocs.io/en/latest/key_concepts.html) for more details.
 
 For the most comprehensive usage documentation, please visit [https://deeph-dock.readthedocs.io](https://deeph-dock.readthedocs.io).
 

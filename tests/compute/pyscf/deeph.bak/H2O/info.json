@@ -1,0 +1,1 @@
+{"atoms_quantity": 3, "orbits_quantity": 24, "orthogonal_basis": false, "spinful": false, "fermi_energy_eV": 0.0, "elements_orbital_map": {"O": [0, 0, 0, 1, 1, 2], "H": [0, 0, 1]}, "basis": "cc-pvdz"}
