@@ -155,7 +155,7 @@ class OpenMXDatasetTranslator:
         - Setting n_tier > 0 requires corresponding OpenMX calculations with appropriate interaction ranges.
     
     See Also:
-        DeepH documentation: https://deeph.readthedocs.io/
+        DeepH documentation: https://docs.deeph-pack.com/deeph-pack/
         OpenMX documentation: https://www.openmx-square.org/
     """
     def __init__(self,
