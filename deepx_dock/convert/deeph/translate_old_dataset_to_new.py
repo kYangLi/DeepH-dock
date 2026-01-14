@@ -16,7 +16,7 @@ from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
 from deepx_dock.CONSTANT import DEEPX_DENSITY_MATRIX_FILENAME, DEEPX_VR_FILENAME
 from deepx_dock.CONSTANT import PERIODIC_TABLE_INDEX_TO_SYMBOL
 from deepx_dock.CONSTANT import PERIODIC_TABLE_SYMBOL_TO_INDEX
-from deepx_dock.misc import get_data_dir_lister, read_poscar_file
+from deepx_dock.misc import get_data_dir_lister, load_poscar_file
 
 DEEPX_NECESSARY_FILES = {DEEPX_POSCAR_FILENAME, DEEPX_INFO_FILENAME}
 
@@ -375,7 +375,7 @@ class OldDatasetTranslator:
     @staticmethod
     def _transfer_new_info_to_old(old_dir_path: Path, new_dir_path: Path):
         # Read in POSCAR
-        result = read_poscar_file(new_dir_path / DEEPX_POSCAR_FILENAME)
+        result = load_poscar_file(new_dir_path / DEEPX_POSCAR_FILENAME)
         lat = result["lattice"].T
         elem_symbols_unique = result["elements_unique"]
         elem_counts = result["elements_counts"]

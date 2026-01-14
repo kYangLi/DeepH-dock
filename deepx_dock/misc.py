@@ -1,32 +1,37 @@
 import numpy as np
 import toml
 import json
-from typing import Callable
+from typing import Callable, List, Any
 from pathlib import Path
 
-
-def read_json_file(file_path):
+# ==============================================================================
+# Basic
+# ==============================================================================
+def load_json_file(file_path):
     with open(file_path) as f:
         return json.load(f)
 
 
-def write_json_file(file_path, dict_content):
+def dump_json_file(file_path, dict_content):
     with open(file_path, "w") as f:
         json.dump(dict_content, f)
 
 
-def read_toml_file(file_path):
+def load_toml_file(file_path):
     with open(file_path, "r") as f:
         config = toml.load(f)
     return config
 
 
-def write_toml_file(file_path, dict_content):
+def dump_toml_file(file_path, dict_content):
     with open(file_path, "w") as f:
         toml.dump(dict_content, f)
 
 
-def read_poscar_file(file_path):
+# ==============================================================================
+# POSCAR
+# ==============================================================================
+def load_poscar_file(file_path):
     with open(file_path, "r") as f:
         lines = f.readlines()
     # Scale for lattice vector and cartesian coordinates
@@ -61,7 +66,7 @@ def read_poscar_file(file_path):
     }
 
 
-def write_poscar_file(file_path, structure, direct=False, dump_decimals=-1):
+def dump_poscar_file(file_path, structure, direct=False, dump_decimals=-1):
     _lat = structure["lattice"]
     _coords = structure["frac_coords"] if direct else structure["cart_coords"]
     elem_symbol_string = " ".join(structure["elements_unique"])
@@ -88,8 +93,21 @@ def write_poscar_file(file_path, structure, direct=False, dump_decimals=-1):
         fw.writelines(lines)
 
 
+# ==============================================================================
+# DFT Dir Lister
+# ==============================================================================
+DEEPX_NECESSARY_FILES = {"POSCAR", "info.json"}
+
+def _defalult_val_check(root_dir: Path, prev_dirname: Path):
+    all_files = [str(v.name) for v in root_dir.iterdir()]
+    if DEEPX_NECESSARY_FILES.issubset(set(all_files)):
+        yield prev_dirname
+    else:
+        print(f"Skip {prev_dirname} because of missing necessary files.")
+
 def get_data_dir_lister(
-    root_dir: Path, depth: int, validation_check: Callable,
+    root_dir: Path, depth: int,
+    validation_check: Callable = _defalult_val_check,
     prev_dirname: Path | None = None
 ):
     if prev_dirname is None:
@@ -105,4 +123,14 @@ def get_data_dir_lister(
                 yield from get_data_dir_lister(
                     subdir_path, depth-1, validation_check, next_prev_dirname
                 )
+
+
+# ==============================================================================
+# Misc
+# ==============================================================================
+def list_A_contained_B(A: List[Any], B: List[Any]) -> bool:
+    from collections import Counter
+    cA = Counter(A)
+    cB = Counter(B)
+    return all(cB[key] <= cA[key] for key in cB)
 

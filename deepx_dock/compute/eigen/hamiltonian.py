@@ -9,12 +9,12 @@ from scipy.sparse.linalg import eigsh
 from tqdm import tqdm
 from joblib import Parallel, delayed
 
-from deepx_dock.misc import read_json_file, read_poscar_file
+from deepx_dock.misc import load_json_file, load_poscar_file
 from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME
 from deepx_dock.CONSTANT import DEEPX_INFO_FILENAME
 from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
-from deepx_dock.compute.eigen.matrix import AOMatrixR, AOMatrixK
+from deepx_dock.compute.eigen.matrix import AOMatrixR
 
 class HamiltonianObj:
     """
@@ -261,11 +261,11 @@ class HamiltonianObj:
 
     @staticmethod
     def _read_info_json(json_path):
-        return read_json_file(json_path)
+        return load_json_file(json_path)
 
     @staticmethod
     def _read_poscar(filename):
-        result = read_poscar_file(filename)
+        result = load_poscar_file(filename)
         elements = [
             elem for elem, n in zip(
                 result["elements_unique"], result["elements_counts"]

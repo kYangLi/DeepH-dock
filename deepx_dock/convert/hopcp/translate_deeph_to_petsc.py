@@ -13,7 +13,7 @@ try:
 except Exception as e:
     print("[error] The petsc4py is not well installed.")
 
-from deepx_dock.misc import read_json_file, write_toml_file
+from deepx_dock.misc import load_json_file, dump_toml_file
 from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME, DEEPX_INFO_FILENAME
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
 from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
@@ -144,7 +144,7 @@ class PETScWriter:
 
     def _read_info(self):
         info_path = self.deeph_path / DEEPX_INFO_FILENAME
-        info = read_json_file(info_path)
+        info = load_json_file(info_path)
         self.spinful = info["spinful"]
         self.orbits_quantity = info["orbits_quantity"]
         self.fermi_energy_eV = info["fermi_energy_eV"]
@@ -329,7 +329,7 @@ class PETScWriter:
             "fermi_energy": self.fermi_energy_eV,
             "orbits_type": orbits_type_out,
         }
-        write_toml_file(info_path, {"misc": misc})
+        dump_toml_file(info_path, {"misc": misc})
 
     def _dump_poscar(self):
         poscar_path = self.petsc_path / DEEPX_POSCAR_FILENAME

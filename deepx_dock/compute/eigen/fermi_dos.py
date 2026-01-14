@@ -7,7 +7,7 @@ import libtetrabz
 from collections import Counter
 
 from deepx_dock.compute.eigen.hamiltonian import HamiltonianObj
-from deepx_dock.misc import write_json_file
+from deepx_dock.misc import dump_json_file
 from deepx_dock.CONSTANT import FERMI_ENERGY_INFO_FILENAME
 from deepx_dock.CONSTANT import DEEPX_EIGVAL_FILENAME, DEEPX_DOS_FILENAME
 
@@ -104,7 +104,7 @@ class FermiEnergyAndDOSGenerator:
         if emin is None:
             emin = np.min(eigvals-GAUSSIAN_NEGLECT_FACTOR*sigma)
         if emax is None:
-            print(f"  E_max is not specified, calculation maybe long ...")
+            print("  E_max is not specified, calculation maybe long ...")
             emax = np.max(eigvals+GAUSSIAN_NEGLECT_FACTOR*sigma)
         if enum is None:
             enum = 101
@@ -143,7 +143,7 @@ class FermiEnergyAndDOSGenerator:
             raise ValueError(f"Unknown method: {method}")
 
     def plot_dos_data(self, plot_format="png", dpi=300):
-        print(f"Ploting DOS ...")
+        print("Ploting DOS ...")
         self._setup_plot_style()
         fig, ax = plt.subplots()
         ax.plot(self.egrid, self.dos, color="black")
@@ -183,7 +183,7 @@ class FermiEnergyAndDOSGenerator:
 
     def dump_fermi_energy(self):
         json_path = self.data_path / FERMI_ENERGY_INFO_FILENAME
-        write_json_file(json_path, {"fermi_energy_eV": self.fermi_energy})
+        dump_json_file(json_path, {"fermi_energy_eV": self.fermi_energy})
 
     def dump_eigval_data(self):
         h5file_path = self.data_path / DEEPX_EIGVAL_FILENAME

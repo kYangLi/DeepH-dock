@@ -6,7 +6,7 @@ from joblib import Parallel, delayed
 
 from deepx_dock.analyze.error.with_infer_res import ErrorElementsDistributionAnalyzer
 from deepx_dock.analyze.error.with_infer_res import ErrorStructureDistributionAnalyzer
-from deepx_dock.misc import read_json_file
+from deepx_dock.misc import load_json_file
 from deepx_dock.CONSTANT import DEEPX_INFO_FILENAME
 
 MASK_THRESHOLD = 1E-10
@@ -76,7 +76,7 @@ class ErrorElementsDistAnalyzerWithLog(ErrorElementsDistributionAnalyzer):
     def _get_one_result(sid: str, error: float, dft_dir: str | Path):
         dft_dir = Path(dft_dir)
         info_path = dft_dir / sid / DEEPX_INFO_FILENAME
-        info = read_json_file(info_path)
+        info = load_json_file(info_path)
         atoms_elem = list(info["elements_orbital_map"].keys())
         return {"elements": atoms_elem, "error": error}
 
