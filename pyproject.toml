@@ -47,6 +47,15 @@ petsc = [
     "petsc4py",
 ]
 
+pyscf = [
+    "pyscf",
+]
+
+fhiaims = [
+    "scalapack4py",
+    "asi4py",
+]
+
 docs = [
     "sphinx",
     "sphinx-book-theme",
@@ -60,11 +69,6 @@ docs = [
     "jupytext",
     "docutils",
 ]
-
-pyscf = [
-    "pyscf",
-]
-
 
 [project.urls]
 Repository = "https://github.com/kYangLi/DeepH-dock.git"

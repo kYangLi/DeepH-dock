@@ -19,9 +19,9 @@
 
 At the core of *DeepH-dock* is **a unified and flexible interface layer that seamlessly connects mainstream DFT packages with the DeepH workflow**, enabling users to generate and utilize deep learning-based Hamiltonians with minimal effort. DeepH-dock offers first-class support for heterogeneous computational environments, allowing researchers to orchestrate complex multi-software workflows through a consistent Python API.
 
-*DeepH-dock* also establishes a unified data format tailored for machine learning in materials science, facilitating efficient implementations of both force fields and electronic structure methods. please refer to [our documentation](https://deeph-dock.readthedocs.io/en/latest/key_concepts.html) for more details.
+*DeepH-dock* also establishes [a unified data format tailored for machine learning in materials science](https://docs.deeph-pack.com/deeph-dock/en/latest/key_concepts.html), facilitating efficient implementations of both force fields and electronic structure methods.
 
-For the most comprehensive usage documentation, please visit [https://deeph-dock.readthedocs.io](https://deeph-dock.readthedocs.io).
+For the most comprehensive usage documentation, please visit [https://docs.deeph-pack.com/deeph-dock](https://docs.deeph-pack.com/deeph-dock/en/latest/).
 
 For the latest version-specific documentation of DeepH-pack, please refer to the [corresponding repository](https://github.com/kYangLi/DeepH-pack-docs).
 
@@ -107,7 +107,7 @@ We welcome contributions from the community! To ensure a consistent and maintain
 
 ### Development Workflow for Contributors
 
-A brief summary is provided below. Complete documentation can be found in the [Development Guide](https://deeph-dock.readthedocs.io/en/latest/for_developers/development_guide.html).
+A brief summary is provided below. Complete documentation can be found in the [Development Guide](https://docs.deeph-pack.com/deeph-dock/en/latest/for_developers/development_guide.html).
 
 1. **Identify the Target Module**
 
@@ -167,7 +167,7 @@ This project is licensed under the GPL 3.0 License - see the [LICENSE](LICENSE) 
 
 ## Support & Contact
 
-- 📖 **Documentation**: [Documentation Link](https://deeph-dock.readthedocs.io)
+- 📖 **Documentation**: [Documentation Link](https://docs.deeph-pack.com/deeph-dock/en/latest/)
 - 🐛 **Issue Reporting**: [GitHub Issues](https://github.com/kYangLi/DeepH-dock/issues)
 <!-- - 💬 **Discussions**: [GitHub Discussions]() -->
 
