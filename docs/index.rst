@@ -76,7 +76,7 @@ Install the latest version from the repository via pip:
 
 .. code-block:: bash
 
-    pip install git+https://github.com/kYangLi/DeepH-dock
+    pip install deepx-dock
 
 For detailed guidance including step-by-step installation, troubleshooting, and development environment setup, please refer to `Installation & Setup <./installation_and_setup.html>`_.
 

@@ -6,7 +6,7 @@ from tqdm import tqdm
 from functools import partial
 from joblib import Parallel, delayed
 
-from deepx_dock.misc import read_json_file
+from deepx_dock.misc import load_json_file
 from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME, DEEPX_INFO_FILENAME
 from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
@@ -82,7 +82,7 @@ class DatasetHStandardize:
     @staticmethod
     def _get_spinful_info(dft_dir_path):
         info_path = Path(dft_dir_path) / DEEPX_INFO_FILENAME
-        return read_json_file(info_path)["spinful"]
+        return load_json_file(info_path)["spinful"]
 
     @staticmethod
     def _convert_overlap_to_spinful(atom_pairs, boundaries, shapes, overlap):

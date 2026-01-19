@@ -44,6 +44,12 @@ Ensure you've activated the uv environment as described in the previous section,
 
 Execute the following commands to automatically install `DeepH-dock` and all its dependencies:
 
+For publish version:
+```bash
+uv pip install deepx-dock
+```
+
+For development version:
 ```bash
 uv pip install git+https://github.com/kYangLi/DeepH-dock
 ```

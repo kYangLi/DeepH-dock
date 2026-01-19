@@ -14,7 +14,7 @@ import matplotlib.cm as cm
 import matplotlib.patches as patches
 import mendeleev
 
-from deepx_dock.misc import read_json_file, write_json_file
+from deepx_dock.misc import load_json_file, dump_json_file
 
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
 from deepx_dock.CONSTANT import DEEPX_DENSITY_MATRIX_FILENAME
@@ -221,7 +221,7 @@ class BaseAnalyzer:
     
     def _get_all_dft_dir(self):
         if self.data_split_json is not None and self.data_split_json.is_file():
-            data_split = read_json_file(self.data_split_json)
+            data_split = load_json_file(self.data_split_json)
             all_dft_dir = []
             for tag in self.data_split_tags.split(','):
                 all_dft_dir += data_split[tag]
@@ -837,10 +837,10 @@ class ErrorElementsDistributionAnalyzer(BaseAnalyzer):
             "error": self.elem_error,
             "count": self.elem_count,
         }
-        write_json_file(self.cached_result_path, data)
+        dump_json_file(self.cached_result_path, data)
     
     def _load_cached_result(self):
-        data = read_json_file(self.cached_result_path)
+        data = load_json_file(self.cached_result_path)
         self.elem_error = data["error"]
         self.elem_count = data["count"]
         self.average_error = np.mean(list(self.elem_error.values()))
@@ -992,10 +992,10 @@ class ErrorStructureDistributionAnalyzer(BaseAnalyzer):
 
     def _cache_the_result(self):
         data = {"sids": self.sids, "errors": list(self.errors),}
-        write_json_file(self.cached_result_path, data)
+        dump_json_file(self.cached_result_path, data)
     
     def _load_cached_result(self):
-        data = read_json_file(self.cached_result_path)
+        data = load_json_file(self.cached_result_path)
         self.sids = data["sids"]
         self.errors = np.array(data["errors"])
         self.average_error = np.mean(self.errors)

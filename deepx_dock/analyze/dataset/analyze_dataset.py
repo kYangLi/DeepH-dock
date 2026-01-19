@@ -1,22 +1,68 @@
 from pathlib import Path
 import json
 import h5py
+import re
 from tqdm import tqdm
 from functools import partial
 from joblib import Parallel, delayed
+from typing import List
 
 import numpy as np
 import matplotlib.pyplot as plt
 
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME, DFT_DIRNAME
 from deepx_dock.CONSTANT import DATASET_SPLIT_FILENAME
-from deepx_dock.misc import get_data_dir_lister
+from deepx_dock.CONSTANT import PERIODIC_TABLE_INDEX_TO_SYMBOL
+from deepx_dock.analyze.dataset.dft_features import DFTDatasetFeaturesDetective
+from deepx_dock.analyze.dataset.e3nn_irreps import Irreps
 
 EDGE_QUANTITY_STATISTIC_FIGURE = "edge_quantity_statistics.png"
 
 
-def _validation_check(root_dir: Path, prev_dirname: Path):
-    yield prev_dirname
+def _convert_orbital_string_to_list(s: str) -> List[int]:
+    if (not s) or (s is None):
+        return []
+    orbital_map = ['s', 'p', 'd', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n']
+    if s[0] not in orbital_map:
+        raise ValueError(f"The orbital string `{s}` in wrong format, it should be `s?p?d?...`.")
+    result = []
+    for match in re.findall(r'([spdfghijklmn])(\d*)', s.lower()):
+        orbital, count_str = match
+        count = int(count_str) if count_str else 1
+        result.extend([orbital_map.index(orbital)]*count)
+    return result
+
+
+def _convert_list_to_orbital_string(ls):
+    orbital_map = ['s', 'p', 'd', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n']
+    string = ""
+    ls_counts = np.bincount(ls)
+    for ll, n in enumerate(ls_counts):
+        string += f'{orbital_map[ll]}{n}'
+    if len(string) == 0:
+        return None
+    return string
+
+
+def _common_orbital_types_to_irreps(
+    common_orbital_types, spinful: bool, consider_parity: bool
+):
+    irreps_l_list = []
+    for orb_l1 in common_orbital_types:
+        for orb_l2 in common_orbital_types:
+            use_odd_parity = (consider_parity) and (((orb_l1 + orb_l2) % 2) == 1)
+            p = -1 if use_odd_parity else 1
+            irreps = [(1, (orb_l, p)) for orb_l in range(abs(orb_l1 - orb_l2), orb_l1 + orb_l2 + 1)]
+            if spinful:
+                irreps_x1 = []
+                for _, ir in irreps:
+                    ir_x1 = [(1, (orb_l, p)) for orb_l in range(abs(ir[0] - 1), ir[0] + 2)]
+                    irreps_x1.extend(ir_x1)
+                irreps.extend(irreps_x1)
+            irreps_l_list.extend(irreps)
+    if spinful:
+        irreps_l_list += irreps_l_list
+    return Irreps(irreps_l_list)
 
 
 class DatasetAnalyzer:
@@ -26,34 +72,149 @@ class DatasetAnalyzer:
         self.n_jobs = n_jobs
         self.n_tier = n_tier
 
-    def gen_dft_features(self):
-        self._find_all_dft_data_dir()
-        features = {
-            "dft_dirname_list": self.all_dft_dirname,
+    # ------------------------------------------------
+    # DFT Features Analysis
+    # ------------------------------------------------
+    @property
+    def dft_features(self):
+        return DFTDatasetFeaturesDetective(
+            dft_path=self.dft_data_path, data_dir_depth=self.n_tier,
+            parallel_num=self.n_jobs,
+        ).features
+
+    def analysis_dft_features(self,
+        common_orbital_types=None, consider_parity=False
+    ):
+        # Getting the orbital info
+        if common_orbital_types is not None and common_orbital_types:
+            common_orbital_types = _convert_orbital_string_to_list(common_orbital_types)
+            orbital_source = "user_specified"
+        else:
+            common_orbital_types = self.dft_features.common_orbital_types
+            orbital_source = "auto_detected"
+        
+        spinful = self.dft_features.spinful
+        irreps_comm_orb = _common_orbital_types_to_irreps(
+            common_orbital_types, spinful, consider_parity
+        ).regroup()
+        
+        # Getting the irreps' info
+        irreps_in_suggest = self._gen_suggest_irreps_in(irreps_comm_orb, spinful)
+        irreps_in_exp2 = self._gen_exp2_irreps_in(irreps_comm_orb)
+        irreps_in_trivial = self._gen_trivial_irreps_in(irreps_comm_orb)
+        
+        # Getting elements' info
+        elements = [
+            PERIODIC_TABLE_INDEX_TO_SYMBOL[v] 
+            for v in self.dft_features.elements_orbital_map.keys()
+        ]
+        
+        # Output
+        # - Basic info
+        print("\n📊 BASIC DATASET INFO")
+        print("-----------------------")
+        print(f"  • Spinful:                {spinful}")
+        print(f"  • Parity consideration:   {consider_parity}")
+        print(f"  • Total data points:      {self.dft_features.all_dft_data_num:,}")
+        
+        # - Elements and orbital
+        print("\n🧪 ELEMENT & ORBITAL INFO")
+        print("---------------------------")
+        print(f"  • Elements included:      {', '.join(elements)} ({len(elements)} elements)")
+        print(f"  • Orbital source:         {orbital_source}")
+        
+        if common_orbital_types is not None:
+            print(f"  • BS3B orbital types:     {common_orbital_types}")
+        else:
+            print(f"  • Common orbital types:   {_convert_list_to_orbital_string(common_orbital_types)}")
+        
+        # - Irreps
+        print("\n🎯 IRREPS INFORMATION")
+        print("-----------------------")
+        print(f"  {'Irreps Type':<20} {'Irreps':<50} {'Dimension':<10}")
+        print(f"  {'.'*20:<20} {'.'*50:<50} {'.'*10:<10}")
+        print(f"  {'Common orbital':<20} {str(irreps_comm_orb):<50} {irreps_comm_orb.dim:<10}")
+        print(f"  {'Suggested':<20} {str(irreps_in_suggest):<50} {irreps_in_suggest.dim:<10}")
+        print(f"  {'Exp2':<20} {str(irreps_in_exp2):<50} {irreps_in_exp2.dim:<10}")
+        print(f"  {'Trivial':<20} {str(irreps_in_trivial):<50} {irreps_in_trivial.dim:<10}")
+        
+        # Summary
+        print("\n💡 RECOMMENDATIONS")
+        print("--------------------")
+        
+        recommendations = []
+        
+        # - Based on quantity
+        if self.dft_features.all_dft_data_num < 100:
+            recommendations.append("Small dataset detected - consider data augmentation or transfer learning")
+        elif self.dft_features.all_dft_data_num < 6000:
+            recommendations.append("Moderate dataset size - regular training recommended")
+        else:
+            recommendations.append("Large dataset available - suitable for complex model training")
+        
+        # - Based on orb
+        if irreps_comm_orb.dim > 120:
+            recommendations.append("High-dimensional irreps - consider dimensionality reduction techniques")
+        
+        # - Based on spinful
+        if spinful:
+            recommendations.append("Spinful system - ensure spin-related symmetries are properly handled")
+        
+        # Print the summary
+        for i, rec in enumerate(recommendations, 1):
+            print(f"  {i}. {rec}")
+        
+        # Return!
+        return {
+            "spinful": spinful,
+            "elements": elements,
+            "common_orbital_types": common_orbital_types,
+            "irreps_comm_orb": irreps_comm_orb,
+            "irreps_in_suggest": irreps_in_suggest,
+            "irreps_in_exp2": irreps_in_exp2,
+            "irreps_in_trivial": irreps_in_trivial,
+            "all_dft_data_num": self.dft_features.all_dft_data_num
         }
-        return features
+
+    @staticmethod
+    def _gen_suggest_irreps_in(irreps_comm_orb, spinful):
+        def suggest_mul(mul):
+            _exp_suggest = 2**int(np.ceil(np.log2(mul)))
+            _8_suggest = 8 * ((mul - 1) // 8 + 1)
+            if mul <= 2:
+                return 2
+            elif mul <= 8:
+                return _exp_suggest
+            else:
+                return _8_suggest
+        return Irreps([
+            (suggest_mul(mul),(ll,p))
+            for mul,(ll,p) in irreps_comm_orb // (1+spinful)
+        ]).regroup()
     
-    def _find_all_dft_data_dir(self):
-        print("[do] Locate all DFT data directories ...", flush=True)
-        print(f"[rawdata] Processing DFT data in `{self.dft_data_path}`.")
-        lister = get_data_dir_lister(
-            self.dft_data_path, self.n_tier, _validation_check
-        )
-        all_dft_dir_list = [str(d) for d in tqdm(lister, desc="  +-[search]")]
-        #
-        structures_num = len(all_dft_dir_list)
-        if structures_num == 0:
-            raise FileNotFoundError(f"[error] No valid data found in `{self.dft_data_path}`")
-        print(f"[rawdata] Found `{structures_num}` structures in `{self.dft_data_path}`.")
-        #
-        self.all_dft_dirname = sorted(all_dft_dir_list)
-        self.all_dft_data_num = structures_num
+    @staticmethod
+    def _gen_exp2_irreps_in(irreps_comm_orb):
+        max_mul = max([v.mul for v in irreps_comm_orb])
+        l0_mul = 2**int(np.ceil(np.log2(max_mul)))
+        return Irreps([
+            (max(int(l0_mul//(2**(i))),2),(ll,p))
+            for i,(_,(ll,p)) in enumerate(irreps_comm_orb)
+        ]).regroup()
+
+    @staticmethod
+    def _gen_trivial_irreps_in(irreps_comm_orb):
+        max_mul = max([v.mul for v in irreps_comm_orb])
+        l0_mul = 2**int(np.ceil(np.log2(max_mul)))
+        return Irreps([
+            (max(l0_mul,2),(ll,p))
+            for i,(_,(ll,p)) in enumerate(irreps_comm_orb)
+        ]).regroup()
 
     # ------------------------------------------------
     # Data Split JSON Generator
     # ------------------------------------------------
     def generate_data_split_json(self,
-        features, train_ratio=0.6, val_ratio=0.2, test_ratio=0.2,
+        train_ratio=0.6, val_ratio=0.2, test_ratio=0.2,
         max_edge_num=-1, rng_seed=137
     ):
         assert (train_ratio + val_ratio + test_ratio) <= 1.0
@@ -64,7 +225,7 @@ class DatasetAnalyzer:
         )
         results = Parallel(n_jobs=self.n_jobs)(
             delayed(worker)(dir_name)
-            for dir_name in tqdm(features["dft_dirname_list"],desc="Data Split")
+            for dir_name in tqdm(self.dft_features.all_dft_dirname,desc="Data Split")
         )
         available_data_dirs = [name for name in results if name is not None]
         # Generate the data split
@@ -101,7 +262,7 @@ class DatasetAnalyzer:
     # ------------------------------------------------
     # Statistic edges quantity
     # ------------------------------------------------
-    def statistic_edge_quantity(self, features, bins=None):
+    def statistic_edge_quantity(self, bins=None):
         # Read the edge_quantity
         cache_path = self.data_path / "edge_statistic.h5"
         if cache_path.is_file():
@@ -115,7 +276,7 @@ class DatasetAnalyzer:
             results = Parallel(n_jobs=self.n_jobs)(
                 delayed(worker)(dir_name)
                 for dir_name in tqdm(
-                    features["dft_dirname_list"], desc="Edge Analysis"
+                    self.dft_features.all_dft_dirname, desc="Edge Analysis"
                 )
             )
             results = np.array(results)

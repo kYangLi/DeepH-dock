@@ -7,7 +7,7 @@ import math
 import shutil
 from tqdm import tqdm
 
-from deepx_dock.misc import read_poscar_file, write_poscar_file
+from deepx_dock.misc import load_poscar_file, dump_poscar_file
 
 
 def gen_struct(
@@ -18,16 +18,10 @@ def gen_struct(
     poscar_dir = Path(poscar_dir)
     
     dir_0 = poscar_dir / "0"
-    structure_0 = read_poscar_file(dir_0 / "POSCAR")
+    structure_0 = load_poscar_file(dir_0 / "POSCAR")
     lat_0 = structure_0["lattice"]
     coords_0 = structure_0["cart_coords"]
     mass_center_0 = np.mean(coords_0, axis=0, keepdims=True)
-    # print("[data] lat_0")
-    # print(lat_0)
-    # print("[data] coords_0")
-    # print(coords_0)
-    # print("[data] mass_center_0")
-    # print(mass_center_0)
 
     structure_i = deepcopy(structure_0)
     random.seed(42)
@@ -70,6 +64,6 @@ def gen_struct(
 
         structure_i["lattice"] = lat_i
         structure_i["cart_coords"] = coords_i
-        write_poscar_file(dir_i / "POSCAR", structure_i, direct=False, dump_decimals=dump_decimals)
+        dump_poscar_file(dir_i / "POSCAR", structure_i, direct=False, dump_decimals=dump_decimals)
 
 

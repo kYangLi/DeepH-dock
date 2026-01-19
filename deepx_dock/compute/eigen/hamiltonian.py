@@ -9,14 +9,70 @@ from scipy.sparse.linalg import eigsh
 from tqdm import tqdm
 from joblib import Parallel, delayed
 
-from deepx_dock.misc import read_json_file, read_poscar_file
+from deepx_dock.misc import load_json_file, load_poscar_file
 from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME
 from deepx_dock.CONSTANT import DEEPX_INFO_FILENAME
 from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
+from deepx_dock.CONSTANT import DEEPX_DENSITY_MATRIX_FILENAME
 
+class AOMatrixR: 
+    """
+    Properties:
+    ----------
+    Rs : np.array((N_R, 3), dtype=int)
+        Lattice displacements for inter-cell hoppings.
+        The displacements are expressed in terms of the lattice vectors.
+        N_R is the number of displacements.
+    
+    MRs : np.array((N_R, N_b, N_b), dtype=float/complex)
+        Overlap matrix in real space. MRs[i, :, :] = S(Rijk_list[i, :]).
+        The dtype is float if spinful is false, otherwise the dtype is complex.
+    """
+    def __init__(self, Rs, MRs):
+        self.Rs = Rs
+        self.MRs = MRs
 
-class HamiltonianObj:
+    def r2k(self, ks):
+        # ks: (Nk, 3), Rs: (NR, 3) -> phase: (Nk, NR)
+        phase = np.exp(2j * np.pi * np.matmul(ks, self.Rs.T))
+        # MRs: (NR, Nb, Nb) -> flat: (NR, Nb*Nb)
+        MRs_flat = self.MRs.reshape(len(self.Rs), -1)
+        # (Nk, NR) @ (NR, Nb*Nb) -> (Nk, Nb*Nb)
+        Mks_flat = np.matmul(phase, MRs_flat)
+        return Mks_flat.reshape(len(ks), *self.MRs.shape[1:])
+
+class AOMatrixK:
+    """
+    Properties:
+    ----------
+    ks : np.array((N_k, 3), dtype=float)
+        Reciprocal lattice points for the Fourier transform.
+        N_k is the number of points.
+    
+    MKs : np.array((N_k, N_b, N_b), dtype=float/complex)
+        Overlap matrix in reciprocal space. MKs[i, :, :] = S(ks[i, :]).
+        The dtype is float if spinful is false, otherwise the dtype is complex.
+    """
+    def __init__(self, ks, MKs):
+        self.ks = ks
+        self.MKs = MKs  
+    
+    def k2r(self, Rs, weights=None):
+        # weights: (Nk,)
+        if weights is None:
+            weights = np.ones(len(self.ks)) / len(self.ks)
+        else:
+            weights = np.array(weights)
+        # Rs: (NR, 3), ks: (Nk, 3) -> phase: (NR, Nk)
+        phase = np.exp(-2j * np.pi * np.matmul(Rs, self.ks.T))
+        # MKs: (Nk, Nb, Nb) -> flat: (Nk, Nb*Nb)
+        MKs_flat = self.MKs.reshape(len(self.ks), -1)
+        # (NR, Nk) @ (Nk, Nb*Nb) -> (NR, Nb*Nb)
+        MRs_flat = np.matmul(phase, MKs_flat * weights[:, None])
+        return MRs_flat.reshape(len(Rs), *self.MKs.shape[1:])
+
+class AOMatrixObj:
     """
     Tight-binding Hamiltonian in the matrix form.
     
@@ -30,8 +86,16 @@ class HamiltonianObj:
     info_dir_path : str 
         Path to the directory containing the POSCAR, info.json and overlap.h5.
     
-    H_file_path : str (optional)
-        Path to the Hamiltonian file. Default: hamiltonian.h5 under `info_dir_path`.
+    matrix_file_path : str (optional)
+        Path to the matrix file. Default: hamiltonian.h5 under `info_dir_path`.
+    
+    matrix_type : str (optional)
+        Type of the matrix. Default: "hamiltonian".
+
+    mats : np.array((N_R, N_b, N_b), dtype=float) (optional)
+        Matrix in real space (see below). If provided, the object will not load 
+        the matrix from the file. In this case,the Lattice displacements of the 
+        matrix MUST be sorted to avoid bugs.
     
     Properties:
     ----------
@@ -45,39 +109,81 @@ class HamiltonianObj:
         Lattice displacements for inter-cell hoppings.
         The displacements are expressed in terms of the lattice vectors.
         N_R is the number of displacements.
+        The list is sorted such that the indices follow an ascending hierarchical order, 
+        where the z-index varies most slowly and the x-index varies most rapidly
+        (similar to C-style row-major order flattened from 3D).
 
-    SR : np.array((N_R, N_b, N_b), dtype=float)
-        Overlap matrix in real space. SR[i, :, :] = S(Rijk_list[i, :]).
+    mats : np.array((N_R, N_b, N_b), dtype=float)
+        Matrix in real space. mats[i, :, :] = matrix(Rijk_list[i, :]).
         N_b is the number of basis functions in the unit cell (including the spin DOF if spinful is true).
-    
-    HR : np.array((N_R, N_b, N_b), dtype=float/complex)
-        Hamiltonian matrix in real space. HR[i, :, :] = H(Rijk_list[i, :]).
-        The dtype is float if spinful is false, otherwise the dtype is complex.
+
+        for matrix_type == "hamiltonian" or matrix_type == "density_matrix":
+            The dtype is float if spinful is false, otherwise the dtype is complex.
+        for matrix_type == "overlap":
+            The dtype is float.
+
     """
-    def __init__(self, info_dir_path, H_file_path=None):
-        self._get_necessary_data_path(info_dir_path, H_file_path)
+    def __init__(self, info_dir_path, matrix_file_path=None, matrix_type="hamiltonian", mats=None):
+        self._get_necessary_data_path(info_dir_path, matrix_file_path, matrix_type)
         #
+        self.mats = None
         self.Rijk_list = None
-        self.SR = None
-        self.HR = None
         #
-        self.parse_data()
+        Rijk_only = False
+        if mats is not None:
+            Rijk_only = True
+        self.parse_data(matrix_type, Rijk_only)
+        self._sort_Rijk()
+        if Rijk_only:
+            self.mats = mats
+            assert self.R_quantity == len(mats)
+
+    def _sort_Rijk(self):
+        tx = self.Rijk_list[:, 0]
+        ty = self.Rijk_list[:, 1]
+        tz = self.Rijk_list[:, 2]
+        
+        sort_indices = np.lexsort((tx, ty, tz))
+        self.Rijk_list = self.Rijk_list[sort_indices]
+        if self.mats is not None:
+            self.mats = self.mats[sort_indices]
+
+    @property
+    def R_quantity(self):
+        return len(self.Rijk_list)
 
     def _get_necessary_data_path(self,
-        info_dir_path: str | Path, H_file_path: str | Path | None = None
+        info_dir_path: str | Path, matrix_file_path: str | Path | None = None, matrix_type="hamiltonian"
     ):
         info_dir_path = Path(info_dir_path)
+        self.info_dir_path = info_dir_path
         self.poscar_path = info_dir_path / DEEPX_POSCAR_FILENAME
         self.info_json_path = info_dir_path / DEEPX_INFO_FILENAME
-        self.SR_path = info_dir_path / DEEPX_OVERLAP_FILENAME
-        self.HR_path = (info_dir_path / DEEPX_HAMILTONIAN_FILENAME) if H_file_path is None else Path(H_file_path)
+        if matrix_file_path is not None:
+            self.matrix_path = Path(matrix_file_path)
+        else:
+            if matrix_type == "hamiltonian":
+                self.matrix_path = info_dir_path / DEEPX_HAMILTONIAN_FILENAME
+            elif matrix_type == "overlap":
+                self.matrix_path = info_dir_path / DEEPX_OVERLAP_FILENAME
+            elif matrix_type == "density_matrix":
+                self.matrix_path = info_dir_path / DEEPX_DENSITY_MATRIX_FILENAME
+            else:
+                raise ValueError(f"Invalid matrix_type: {matrix_type}")
 
-    def parse_data(self):
+    def parse_data(self, matrix_type="hamiltonian", Rijk_only=False):
         self._parse_info()
         self._parse_poscar()
         self._parse_orbit_types()
-        self._parse_overlap()
-        self._parse_hamiltonian()
+        if Rijk_only:
+            self._parse_matrix_S_like(Rijk_only=True)
+        else:
+            if matrix_type == "hamiltonian" or matrix_type == "density_matrix":
+                self._parse_matrix_H_like()
+            elif matrix_type == "overlap":
+                self._parse_matrix_S_like()
+            else:
+                raise ValueError(f"Unknown matrix type: {matrix_type}")
 
     def _parse_info(self):
         raw_info = self._read_info_json(self.info_json_path)
@@ -108,9 +214,13 @@ class HamiltonianObj:
         )
         assert self.orbits_quantity == self.atom_num_orbits_cumsum[-1], f"Number of orbitals {self.orbits_quantity}(info.json) and {self.atom_num_orbits_cumsum[-1]}(POSCAR) do not match"
 
-    def _parse_overlap(self):
+    def _parse_matrix_S_like(self, Rijk_only=False):
         S_R = {}
-        atom_pairs, bounds, shapes, entries = self._read_h5(self.SR_path)
+        if not Rijk_only:
+            matrix_path = self.matrix_path
+        else:
+            matrix_path = self.info_dir_path / DEEPX_OVERLAP_FILENAME
+        atom_pairs, bounds, shapes, entries = self._read_h5(matrix_path)
         self.atom_pairs = atom_pairs
         for i_ap, ap in enumerate(atom_pairs):
             # Gen Data
@@ -136,30 +246,36 @@ class HamiltonianObj:
             )
             S_R[Rijk][_i_slice, _j_slice] = _S_chunk
         #
-        self.R_quantity = len(S_R)
-        self.Rijk_list = np.zeros((self.R_quantity, 3), dtype=int)
-        self.SR = np.zeros(
-            (self.R_quantity, self.orbits_quantity, self.orbits_quantity),
-            dtype=np.float64
-        )
-        for i_R, (Rijk, S_val) in enumerate(S_R.items()):
-            self.Rijk_list[i_R] = Rijk
-            self.SR[i_R] = S_val
-        #
-        if self.spinful:
-            _zeros_S = np.zeros_like(self.SR)
-            self.SR = np.block(
-                [[self.SR, _zeros_S], [_zeros_S, self.SR]]
+        R_quantity = len(S_R)
+        Rijk_list = np.zeros((R_quantity, 3), dtype=int)
+
+        if Rijk_only:
+            for i_R, (Rijk, _) in enumerate(S_R.items()):
+                Rijk_list[i_R] = Rijk
+            self.Rijk_list = Rijk_list
+        else:
+            SR = np.zeros(
+                (R_quantity, self.orbits_quantity, self.orbits_quantity),
+                dtype=np.float64
             )
-    
-    def _parse_hamiltonian(self):
+            for i_R, (Rijk, S_val) in enumerate(S_R.items()):
+                Rijk_list[i_R] = Rijk
+                SR[i_R] = S_val
+            if self.spinful:
+                _zeros_S = np.zeros_like(SR)
+                SR = np.block(
+                    [[SR, _zeros_S], [_zeros_S, SR]]
+                )
+            self.Rijk_list = Rijk_list
+            self.mats = SR
+
+    def _parse_matrix_H_like(self):
         H_R = {}
         dtype = np.complex128 if self.spinful else np.float64
         atom_pairs, bounds, shapes, entries = \
-            self._read_h5(self.HR_path, dtype=dtype)
-        assert np.array_equal(self.atom_pairs, atom_pairs), "The atom pairs is not the same."
+            self._read_h5(self.matrix_path, dtype=dtype)
+        self.atom_pairs = atom_pairs
         bands_quantity = self.orbits_quantity * (1 + self.spinful)
-        _matrix_shape = (self.R_quantity, bands_quantity, bands_quantity)
         for i_ap, ap in enumerate(atom_pairs):
             # Gen Data
             R_ijk = (ap[0], ap[1], ap[2])
@@ -211,12 +327,16 @@ class HamiltonianObj:
                 )
                 H_R[R_ijk][_i_slice, _j_slice] = _H_chunk
         #
-        assert self.Rijk_list is not None, "You must read in the overlaps first!"
-        assert self.R_quantity == len(H_R), f"The overlap R quantity `{self.R_quantity}` is not agree with the hamiltonian `{len(H_R)}`."
-        self.HR = np.zeros(_matrix_shape, dtype=dtype)
-        for i_R in range(self.R_quantity):
-            R_ijk = self.Rijk_list[i_R]
-            self.HR[i_R] = H_R[tuple(R_ijk)]
+        R_quantity = len(H_R)
+        _matrix_shape = (R_quantity, bands_quantity, bands_quantity)
+        Rijk_list = np.zeros((R_quantity, 3), dtype=int)
+        HR = np.zeros(_matrix_shape, dtype=dtype)
+        for i_R, (Rijk, mat_val) in enumerate(H_R.items()):
+            Rijk_list[i_R] = Rijk
+            HR[i_R] = mat_val
+        
+        self.Rijk_list = Rijk_list
+        self.mats = HR
 
     @staticmethod
     def get_reciprocal_lattice(lattice):
@@ -243,11 +363,11 @@ class HamiltonianObj:
 
     @staticmethod
     def _read_info_json(json_path):
-        return read_json_file(json_path)
+        return load_json_file(json_path)
 
     @staticmethod
     def _read_poscar(filename):
-        result = read_poscar_file(filename)
+        result = load_poscar_file(filename)
         elements = [
             elem for elem, n in zip(
                 result["elements_unique"], result["elements_counts"]
@@ -259,28 +379,79 @@ class HamiltonianObj:
             "cart_coords": result["cart_coords"],
             "frac_coords": result["frac_coords"],
         }
-    
+
+    def r2k(self, ks):
+        # ks: (Nk, 3), Rs: (NR, 3) -> phase: (Nk, NR)
+        phase = np.exp(2j * np.pi * np.matmul(ks, self.Rijk_list.T))
+        # MRs: (NR, Nb, Nb) -> flat: (NR, Nb*Nb)
+        MRs_flat = self.mats.reshape(len(self.Rijk_list), -1)
+        # (Nk, NR) @ (NR, Nb*Nb) -> (Nk, Nb*Nb)
+        Mks_flat = np.matmul(phase, MRs_flat)
+        return Mks_flat.reshape(len(ks), *self.mats.shape[1:])
+
+    def assert_compatible(self, other):
+        """
+        Assert that another AOMatrixObj is structurally compatible with this one.
+        Raises AssertionError if mismatch found.
+        """
+        # 1. scalars
+        assert self.spinful == other.spinful, "Spin mismatch"
+        assert self.orbits_quantity == other.orbits_quantity, "Orbital number mismatch"
+        assert self.is_orthogonal_basis == other.is_orthogonal_basis, "Basis orthogonality mismatch"
+
+        # 2. geometry
+        assert np.allclose(self.lattice, other.lattice), "Lattice vector mismatch"
+        assert self.elements == other.elements, "Element mismatch"
+        assert np.allclose(self.frac_coords, other.frac_coords), "Fractional coordinates mismatch"
+        assert np.array_equal(self.Rijk_list, other.Rijk_list), "Rijk_list mismatch (Sparse structure differs)"
+
+        # 3. storage structure (HDF5 Chunks)
+        if self.atom_pairs is not None and other.atom_pairs is not None:
+            assert np.array_equal(self.atom_pairs, other.atom_pairs), "Atom pairs storage mismatch"
+        
+        # 4. basis definition
+        assert np.array_equal(self.atom_num_orbits_cumsum, other.atom_num_orbits_cumsum), "Orbital indexing mismatch"
+        
+        return True
+
+class HamiltonianObj(AOMatrixObj):
+    def __init__(self, data_path, H_file_path=None):
+        super().__init__(data_path, H_file_path)
+        overlap_obj = AOMatrixObj(data_path, matrix_type="overlap")
+        self.assert_compatible(overlap_obj)
+        self.SR = overlap_obj.mats
+
+    @property
+    def HR(self):
+        return self.mats
+
     @staticmethod
-    def _ft(k, Rs, MRs):
-        phase = np.exp(2j * np.pi * np.dot(Rs, k))
-        Mk = np.sum(phase[:, None, None] * MRs, axis=0)
-        return Mk
-    
-    @staticmethod
-    def _ift(R, ks, Mks):
-        phase = np.exp(-2j * np.pi * np.dot(ks, R))
-        MR = np.sum(phase[:, None, None] * Mks, axis=0) / len(ks)
-        return MR
-    
-    @staticmethod
-    def _Sk_and_Hk(k, Rijk_list, SR, HR):
-        Sk = HamiltonianObj._ft(k, Rijk_list, SR)
-        Hk = HamiltonianObj._ft(k, Rijk_list, HR)
-        return Sk, Hk
+    def _r2k(ks, Rijk_list, mats):
+        # ks: (Nk, 3), Rs: (NR, 3) -> phase: (Nk, NR)
+        phase = np.exp(2j * np.pi * np.matmul(ks, Rijk_list.T))
+        # MRs: (NR, Nb, Nb) -> flat: (NR, Nb*Nb)
+        MRs_flat = mats.reshape(len(Rijk_list), -1)
+        # (Nk, NR) @ (NR, Nb*Nb) -> (Nk, Nb*Nb)
+        Mks_flat = np.matmul(phase, MRs_flat)
+        return Mks_flat.reshape(len(ks), *mats.shape[1:])
 
     def Sk_and_Hk(self, k):
-        return self._Sk_and_Hk(k, self.Rijk_list, self.SR, self.HR)
-
+        # Support batch k or single k.
+        # k: (3,) or (Nk, 3)
+        if k.ndim == 1:
+            ks = k[None, :]
+            squeeze = True
+        else:
+            ks = k
+            squeeze = False
+            
+        Sk = self._r2k(ks, self.Rijk_list, self.SR)
+        Hk = self._r2k(ks, self.Rijk_list, self.HR)
+        
+        if squeeze:
+            return Sk[0], Hk[0]
+        return Sk, Hk
+        
     def diag(self, ks, k_process_num=1, thread_num=None, sparse_calc=False, bands_only=False, **kwargs):
         """
         Diagonalize the Hamiltonian at specified k-points to obtain eigenvalues (bands) 
@@ -317,15 +488,14 @@ class HamiltonianObj:
             Shape: (Norb, Nband, Nk)
         """
 
-        # Reference to the calculation method to avoid full object pickling overhead if possible
-        calc_func = self._Sk_and_Hk 
-        R_list = self.Rijk_list
-        SR = self.SR
         HR = self.HR
+        SR = self.SR
 
         def process_k(k):
             # Hk, Sk: (Norb, Norb)
-            Sk, Hk = calc_func(k, R_list, SR, HR)
+            # Use vectorized r2k for single k (1, 3) -> (1, Norb, Norb) -> (Norb, Norb)
+            Sk = self._r2k(k[None, :], self.Rijk_list, SR)[0]
+            Hk = self._r2k(k[None, :], self.Rijk_list, HR)[0]
             
             if sparse_calc:
                 if bands_only:

@@ -5,24 +5,22 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepx-dock"
-version = "0.9.6"
+version = "0.9.6.post2"
 authors = [
-    {name = "Whenhui Duan", email = "duanw@tsinghua.com"},
-    {name = "Yong Xu", email = "yongxu@tsinghua.com"},
-    {name = "All others in DeepH team", email = "deeph@tsinghua.com"},
+    {name = "DeepH team", email = "deeph-pack@outlook.com"},
 ]
-description = "DeepH-pack dock that designed for DeepH-pack data preparation."
+description = "DeepH-dock seamlessly integrates deep learning with first-principles calculations. It serves as a modular and extensible bridge, functioning both as the dedicated interface for the DeepH-pack suite and as a standalone tool for coupling deep learning models with computational materials science workflows."
 readme = "README.md"
 license = "GPL-3.0-or-later"
 keywords = [
-    "DeepH-pack", "DeepH", "Physics", "Deep Learning", "Graph Neural Network", "JAX", "dock", "FHI-aims", "VASP", "OpenMX", "HPRO"
+    "DeepH-dock", "DeepH-pack", "Physics", "Deep Learning", "Graph Neural Network", "JAX", "FHI-aims", "OpenMX", "ABACUS", "SIESTA", "HPRO"
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
-    "Programming Language :: Python"
+    "Development Status :: 5 - Production/Stable",
+    "Programming Language :: Python :: 3.13",
 ]
 
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.12,<3.15"
 dependencies = [
     "numpy",
     "h5py",
@@ -47,6 +45,15 @@ petsc = [
     "petsc4py",
 ]
 
+pyscf = [
+    "pyscf",
+]
+
+fhiaims = [
+    "scalapack4py",
+    "asi4py",
+]
+
 docs = [
     "sphinx",
     "sphinx-book-theme",
@@ -61,11 +68,6 @@ docs = [
     "docutils",
 ]
 
-pyscf = [
-    "pyscf",
-]
-
-
 [project.urls]
 Repository = "https://github.com/kYangLi/DeepH-dock.git"
 
@@ -78,7 +80,10 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["deepx_dock*"]
-exclude = ["docs*", "examples*", "tests*",]
+exclude = [
+    "docs*", "examples*", "tests*", ".*",
+    "*.egg-info", "build*", "Makefile"
+]
 
 [tool.setuptools.package-data]
 "deepx_dock" = [

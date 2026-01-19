@@ -1,14 +1,18 @@
 <!-- markdownlint-disable MD033 MD036 -->
 <h1><p align="center">
-  <img src="./docs/_image/logo-large.svg" alt="DeepH-dock Logo" width="500">
+  <img src="https://raw.githubusercontent.com/kYangLi/DeepH-dock/main/docs/_image/logo-large.svg" alt="DeepH-dock Logo" width="500">
 </p></h1>
 
 <div align="center">
 
 ### Integrating deep learning into first-principles calculations
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![GitHub Actions PyPI Release](https://github.com/kYangLi/DeepH-dock/actions/workflows/publish.yaml/badge.svg)](https://github.com/kYangLi/DeepH-dock/actions/workflows/publish.yaml)
+[![PyPI Version](https://img.shields.io/pypi/v/deepx-dock.svg)](https://pypi.org/project/deepx-dock/)
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/)
+
+[![License](https://img.shields.io/pypi/l/deepx-dock.svg)](https://pypi.org/project/deepx-dock/)
+[![Documentation Status](https://readthedocs.org/projects/deeph-dock/badge/?version=latest)](https://docs.deeph-pack.com/deeph-dock/en/latest/)
 [![GitHub Issues](https://img.shields.io/github/issues/kYangLi/DeepH-dock.svg)](https://github.com/kYangLi/DeepH-dock/issues)
 [![GitHub Stars](https://img.shields.io/github/stars/kYangLi/DeepH-dock.svg?style=social)](https://github.com/kYangLi/DeepH-dock/stargazers)
 
@@ -52,6 +56,12 @@ For the latest version-specific documentation of DeepH-pack, please refer to the
 
 ### Installation
 
+Publish version:
+```bash
+pip install deepx-dock
+```
+
+Development version:
 ```bash
 pip install git+https://github.com/kYangLi/DeepH-dock
 ```

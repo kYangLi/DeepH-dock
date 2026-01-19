@@ -19,7 +19,7 @@ class BandDataGenerator:
     def _parse_obj_H_info(self):
         self.rlv = self.obj_H.reciprocal_lattice
         self.spinful = self.obj_H.spinful
-        self.band_quantity = self.obj_H.HR.shape[1]
+        self.band_quantity = self.obj_H.orbits_quantity * (1 + self.spinful)
         self.fermi_energy = self.obj_H.fermi_energy
 
     def _parse_band_conf(self):

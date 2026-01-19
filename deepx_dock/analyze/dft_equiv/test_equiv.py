@@ -6,7 +6,7 @@ import h5py
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-from deepx_dock.misc import read_poscar_file
+from deepx_dock.misc import load_poscar_file
 
 
 ROOT_PATH = Path(__file__).resolve().parent
@@ -16,7 +16,7 @@ with h5py.File(ROOT_PATH / "jd.h5", 'r') as f:
     num = len(list(f.keys()))
     jd = [np.array(f[f"l={ll}"][:], dtype=np.float64) for ll in range(num)]
 
-def d_z(theta, l):
+def d_z(theta, l):  # noqa: E741
     if l == 0:
         return np.array([[1.]])
     else:
@@ -30,13 +30,13 @@ def d_z(theta, l):
         mat[range(l+1, 2*l+1, 1), range(l-1, -1,   -1)] = -sins
         return mat
 
-def d_y(theta, l):
+def d_y(theta, l): # noqa: E741
     if l == 0:
         return np.array([[1.]])
     else:
         return jd[l] @ d_z(theta, l) @ jd[l]
 
-def wigner_D_mat(alpha, beta, gamma, l):
+def wigner_D_mat(alpha, beta, gamma, l): # noqa: E741
     if l == 0:
         return np.array([[1.]])
     else:
@@ -66,7 +66,7 @@ def test_equiv(
     R: Tuple[int, int, int] = (0, 0, 0), pair: Tuple[int, int] = (-1, -1)
 ):
     dft_dir = Path(dft_dir)
-    structure_0 = read_poscar_file(dft_dir / "0" / "POSCAR")
+    structure_0 = load_poscar_file(dft_dir / "0" / "POSCAR")
     species = structure_0["elements_unique"]
     atom_nums = structure_0["elements_counts"]
 

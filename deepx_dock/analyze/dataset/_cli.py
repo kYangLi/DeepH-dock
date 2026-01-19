@@ -22,6 +22,39 @@ COMMON_OPT = [
 
 # ------------------------------------------------------------------------------
 @register(
+    cli_name="features",
+    cli_help="Given an input data path containing a `dft/` subdirectory, examine the features of the raw DFT dataset within it.",
+    cli_args=COMMON_OPT + [
+        click.option(
+            '--common-orbital-types', type=str, default=None,
+            help='User given common orbital types.'
+        ),
+        click.option(
+            '--consider-parity', is_flag=True,
+            help='Consider parity when analysis DFT data features.'
+        ),
+    ],
+)
+def analyze_dataset_features(
+    data_path: str | Path,
+    parallel_num: int,
+    tier_num: int,
+    common_orbital_types: str,
+    consider_parity: bool,
+):
+    from deepx_dock.analyze.dataset.analyze_dataset import DatasetAnalyzer
+    inspector = DatasetAnalyzer(
+        data_path=Path(data_path).resolve(),
+        n_jobs=parallel_num,
+        n_tier=tier_num,
+    )
+    inspector.analysis_dft_features(
+        common_orbital_types=common_orbital_types,
+        consider_parity=consider_parity,
+    )
+
+# ------------------------------------------------------------------------------
+@register(
     cli_name="edge",
     cli_help="Statistic and show edge related information.",
     cli_args=COMMON_OPT + [
@@ -50,11 +83,7 @@ def analyze_dataset_edge(
         n_jobs=parallel_num,
         n_tier=tier_num,
     )
-    features = inspector.gen_dft_features()
-    inspector.statistic_edge_quantity(
-        features=features,
-        bins=edge_bins,
-    )
+    inspector.statistic_edge_quantity(bins=edge_bins)
     inspector.plot_edge_quantity(dpi=plot_dpi)
 
 
@@ -91,9 +120,7 @@ def analyze_dataset_split(
         n_jobs=parallel_num,
         n_tier=tier_num,
     )
-    features = inspector.gen_dft_features()
     inspector.generate_data_split_json(
-        features=features,
         train_ratio=split_ratio[0],
         val_ratio=split_ratio[1],
         test_ratio=split_ratio[2],
