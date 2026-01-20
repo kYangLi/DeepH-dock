@@ -21,7 +21,7 @@ class AOMatrixR:
     Properties:
     ----------
     Rs : np.array((N_R, 3), dtype=int)
-        Lattice displacements for inter-cell hoppings.
+        Lattice displacements for inter-cell hoppings, in fractional coordinates (integers).
         The displacements are expressed in terms of the lattice vectors.
         N_R is the number of displacements.
     
@@ -47,7 +47,7 @@ class AOMatrixK:
     Properties:
     ----------
     ks : np.array((N_k, 3), dtype=float)
-        Reciprocal lattice points for the Fourier transform.
+        Reciprocal lattice points for the Fourier transform, in fractional coordinates.
         N_k is the number of points.
     
     MKs : np.array((N_k, N_b, N_b), dtype=float/complex)
@@ -74,12 +74,12 @@ class AOMatrixK:
 
 class AOMatrixObj:
     """
-    Tight-binding Hamiltonian in the matrix form.
+    Tight-binding operator (matrix) in the matrix form.
     
-    This class constructs the Hamiltonian operator from the standard DeepH 
-    format data. The Hamiltonian and overlap matrix in real space (H(R) and S(R))
-    are constructed and can be Fourier transformed to the reciprocal space 
-    (H(k) and S(k)). The diagonalization of the Hamiltonian is also supported.
+    This class constructs the one-body operator (matrix) from the standard DeepH 
+    format data. The operator in real space (e.g. H(R) or S(R))
+    is constructed and can be Fourier transformed to the reciprocal space 
+    (e.g. H(k) or S(k)).
     
     Parameters
     ----------
@@ -130,13 +130,99 @@ class AOMatrixObj:
         self.Rijk_list = None
         #
         Rijk_only = False
-        if mats is not None:
+        if mats is not None or (matrix_file_path is None and mats is None):
             Rijk_only = True
+        #
         self.parse_data(matrix_type, Rijk_only)
         self._sort_Rijk()
-        if Rijk_only:
+        if mats is not None:
             self.mats = mats
-            assert self.R_quantity == len(mats)
+        assert self.R_quantity == len(mats), \
+            f"Mismatch: R_quantity={self.R_quantity}, mats_len={len(mats)}"
+    
+    @classmethod
+    def from_kspace(cls, info_dir_path, AOMatrixK_obj, matrix_type="hamiltonian", 
+                    r_process_num=1, thread_num=None):
+        """
+        Construct a real-space AOMatrixObj from a k-space AOMatrixK object via Inverse Fourier Transform.
+
+        This factory method initializes the real-space sparsity pattern (R-vectors) by reading 
+        the standard DeepH files (specifically `overlap.h5` for Rijk indices) from `info_dir_path`.
+        It then performs an Inverse Fourier Transform on the provided `AOMatrixK_obj` to reconstruction 
+        the real-space matrices H(R) or S(R) projected onto these R-vectors.
+
+        Parallel processing is supported to accelerate the transformation for large systems or dense k-grids.
+
+        Parameters
+        ----------
+        info_dir_path : str or Path
+            Path to the directory containing the standard DeepH input files 
+            (including `info.json`, `POSCAR`, and `overlap.h5`).
+            This is strictly required to determine the lattice structure and the 
+            sparsity pattern (Rijk_list) of the target real-space matrix.
+        
+        AOMatrixK_obj : AOMatrixK
+            The source k-space matrix object. It must contain the k-point mesh 
+            and the matrix values M(k), and implement a `k2r(Rs)` method.
+        
+        matrix_type : str, optional
+            The physical type of the matrix. Options are "hamiltonian", "overlap", 
+            or "density_matrix". Default is "hamiltonian".
+            If "overlap" is selected, the resulting matrix will be cast to real numbers.
+        
+        r_process_num : int, optional
+            Number of parallel processes (workers) to use for the Fourier transform.
+            Default is 1 (serial execution).
+        
+        thread_num : int, optional
+            Number of BLAS/OpenMP threads to use per process.
+            If None, it tries to read the `OPENBLAS_NUM_THREADS` environment variable, 
+            otherwise defaults to 1.
+            Note: When `r_process_num` > 1, it is recommended to keep `thread_num` small 
+            (e.g., 1 or 2) to avoid CPU oversubscription and performance degradation.
+
+        Returns
+        -------
+        AOMatrixObj
+            A new instance of AOMatrixObj. 
+            - Its `Rijk_list` is initialized from the file and sorted.
+            - Its `mats` attribute contains the transformed real-space matrices H(R).
+
+        """
+        obj = cls(info_dir_path, matrix_type=matrix_type)
+        
+        Rs = obj.Rijk_list
+        if Rs is None:
+            raise ValueError("Failed to initialize Rijk_list from info directory.")
+
+        def process_r_chunk(rs_chunk):
+            return AOMatrixK_obj.k2r(rs_chunk)
+
+        if thread_num is None:
+            thread_num = int(os.environ.get('OPENBLAS_NUM_THREADS', "1"))
+        
+        mats_list = []
+        with threadpoolctl.threadpool_limits(limits=thread_num, user_api='blas'):
+            if r_process_num == 1:
+                mats = AOMatrixK_obj.k2r(Rs)
+            else:
+                if len(Rs) > 0:
+                    n_chunks = r_process_num * 4 
+                    rs_chunks = np.array_split(Rs, n_chunks)
+                    
+                    results = Parallel(n_jobs=r_process_num)(
+                        delayed(process_r_chunk)(chunk) for chunk in tqdm(rs_chunks, leave=False, desc="K to R")
+                    )
+                    mats = np.concatenate(results, axis=0)
+                else:
+                    mats = np.zeros((0, obj.orbits_quantity, obj.orbits_quantity))
+
+        obj.mats = mats
+
+        if matrix_type == "overlap" and np.iscomplexobj(obj.mats):
+            obj.mats = np.real(obj.mats)
+
+        return obj
 
     def _sort_Rijk(self):
         tx = self.Rijk_list[:, 0]
@@ -354,6 +440,10 @@ class AOMatrixObj:
 
     @staticmethod
     def _read_h5(h5_path, dtype=np.float64):
+        h5_path_obj = Path(h5_path)
+        if not h5_path_obj.exists():
+            raise FileNotFoundError(f"File not found: {h5_path}")
+        #
         with h5py.File(h5_path, 'r') as f:
             atom_pairs = np.array(f["atom_pairs"][:], dtype=np.int64)
             boundaries = np.array(f["chunk_boundaries"][:], dtype=np.int64)
@@ -542,3 +632,130 @@ class HamiltonianObj(AOMatrixObj):
             eigvecs = np.stack([res[1] for res in results], axis=2)
             
             return eigvals, eigvecs
+
+class AOWfnObj:
+    def __init__(self, kpts, wfnao, el, spinful=False, efermi=None, kgrid=None):
+        self.kpts = kpts
+        self.wfnao = wfnao
+        self.el = el
+        self.spinful = spinful
+        self.efermi = efermi
+        self.kgrid = kgrid
+        if kgrid is not None:
+            assert kpts.shape[0] == np.prod(kgrid)
+
+    def to_h5(self, h5_path):
+        assert self.kgrid is not None
+        with h5py.File(h5_path, 'w') as f:
+            f.create_dataset('kpts', data=self.kpts)
+            f.create_dataset('kgrid', data=self.kgrid)
+            f.create_dataset('wfnao', data=self.wfnao)
+            f.create_dataset('el', data=self.el)
+            f.create_dataset('efermi', data=self.efermi)
+
+    def to_dm(self, representation='k'):
+        pass
+
+    def to_real_space(self):
+        pass
+            
+"""
+Aside: WfnAO object in the BSE program Pykernel (wfnao has shape (nk, nb, norb), and el has shape (nk, nb)):
+
+class WfnAO(PyKernelBase):
+    _PRINT_ITEMS = ("fname", "nk", "nb")
+
+    def __init__(self, poscar_fname, basis_path_root, wfnao_file, nv=None, nc=None):
+        with open(poscar_fname) as f:
+            structure = from_poscar(f)
+        aodata = AOData(structure, basis_path_root=basis_path_root, aocode='siesta')
+
+        with h5py.File(wfnao_file, "r") as h5file:
+            kpts = h5file['kpts'][:].T
+            kgrid = h5file['kgrid'][:]
+            wfnao = h5file['wfnao'][:]
+            el = h5file['el'][:]
+            efermi = h5file['efermi'][()]
+
+        self.orb_info_dict_spc, self.num_orbitals_tot = create_orbital_list(structure, aodata)
+        nspin = wfnao.shape[2] // self.num_orbitals_tot
+        self.nspin = nspin
+        self.dtype = {1: np.float64, 2: np.complex128}[self.nspin]
+        self.wfnao = wfnao.reshape((wfnao.shape[0], wfnao.shape[1], nspin, -1), order='C')  # (nk, nb, nspin, norb)
+
+        self.structure = structure
+        self.aodata = aodata
+        self.kpts = kpts
+        self.kgrid = kgrid
+        self.nk = kpts.shape[1]  # Number of k-points
+        self.el = el
+        self.efermi = efermi
+
+        if nv is not None and nc is not None:
+            idx_v = topN_less_than(self.el, self.efermi, nv)
+            idx_c = lastN_greater_than(self.el, self.efermi, nc)
+            band_indices = np.concatenate((idx_v, idx_c), axis=1)  # (nk, nv+nc)
+            self.wfnao = self.wfnao[np.arange(self.nk)[:, None], band_indices, :, :]
+            self.nb = band_indices.shape[1]
+        else:
+            self.nb = self.wfnao.shape[1]
+            
+        self.wfnao_grouped, self.positions_red_grouped = group_wfnao_all(self.wfnao, structure.atomic_species, aodata.nradial_spc, self.orb_info_dict_spc)
+        self.rgrids_info_spc = {'rcut': {}, 'l': {}}
+        self.nradial_spc = {}
+        for spc in structure.atomic_species:
+            phirgrids = aodata.phirgrids_spc[spc]
+            self.nradial_spc[spc] = aodata.nradial_spc[spc]
+            rcut_spc, l_spc = [], []
+            for _, phirgrid in enumerate(phirgrids):
+                rcut_spc.append(phirgrid.rgd.rfunc[-1])
+                l_spc.append(np.zeros((phirgrid.l,), dtype=np.int32))
+
+            self.rgrids_info_spc['rcut'][spc] = rcut_spc
+            self.rgrids_info_spc['l'][spc] = l_spc
+
+def group_wfnao_all(wfnao, atomic_species, nradial_spc, orb_info_dict_spc):
+    wfnao_grouped = {}
+    positions_red_grouped = {}
+
+    for spc in atomic_species:
+        wfnao_spc = []
+        positions_red_spc = orb_info_dict_spc['positions_red'][spc]
+
+        positions_red_grouped[spc] = positions_red_spc
+
+        for irad in range(nradial_spc[spc]):
+            idx_thisorbit = orb_info_dict_spc['orbital_idx'][spc][irad] # (natom_spc, 2l+1)
+            wfnao_thisorbit = wfnao[:, :, :, idx_thisorbit]  # (nk, nb, nspin, natom_spc, 2l+1)
+            wfnao_thisorbit = np.transpose(wfnao_thisorbit, (0, 3, 4, 1, 2))  # (nk, natom_spc, 2l+1, nband, nspin)
+
+            # (nk, n_device, natom_padded/gpus_per_process, 2l+1, nband, nspin)
+            wfnao_spc.append(wfnao_thisorbit)
+        wfnao_grouped[spc] = wfnao_spc
+
+    return wfnao_grouped, positions_red_grouped
+
+def topN_less_than(arr: np.ndarray, val: float, N: int) -> np.ndarray:
+    arr_masked = np.where(arr < val, arr, -np.inf)
+
+    idx = np.argpartition(arr_masked, -N, axis=1)[:, -N:]  # (M,N)
+
+    rows = np.arange(arr.shape[0])[:, None]
+    vals = arr_masked[rows, idx]  # (M,N)
+    order = np.argsort(vals, axis=1)
+
+    idx_sorted = np.take_along_axis(idx, order, axis=1)
+    return idx_sorted
+
+def lastN_greater_than(arr: np.ndarray, val: float, N: int) -> np.ndarray:
+    B = np.where(arr > val, arr, np.inf)
+
+    part_idx = np.argpartition(B, N-1, axis=1)[:, :N]
+
+    rows = np.arange(arr.shape[0])[:, None]
+    vals = B[rows, part_idx]
+    order = np.argsort(vals, axis=1)
+
+    idx_sorted = np.take_along_axis(part_idx, order, axis=1)
+    return idx_sorted
+"""
