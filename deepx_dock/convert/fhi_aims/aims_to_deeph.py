@@ -92,8 +92,8 @@ HARTREE_TO_EV = 27.2113845 # 27.211386
 AIMS_CONTROL_FILENAME = "control.in"
 AIMS_STRUCT_FILENAME = "geometry.in"
 AIMS_BASIS_FILENAME = "basis-indices.out"
+FILES_NECESSARY = set([AIMS_CONTROL_FILENAME, AIMS_STRUCT_FILENAME, AIMS_BASIS_FILENAME])
 FILES_MX_IDX = "rs_indices.out" 
-FILES_NECESSARY = set([AIMS_CONTROL_FILENAME, AIMS_STRUCT_FILENAME, AIMS_BASIS_FILENAME, FILES_MX_IDX])
 FILES_IN = ["rs_overlap.out", "rs_hamiltonian.out"]
 FILES_IN_SPIN = ["rs_overlap.out", "rs_hamiltonian_up.out", "rs_hamiltonian_dn.out"]  # not support spin orbit coupling yet
 FILES_OUT = [DEEPX_HAMILTONIAN_FILENAME, DEEPX_OVERLAP_FILENAME]
@@ -596,5 +596,8 @@ class FHIAimsReader:
                 'entries', data=self.entries_lst[1]
             )
 
+    # TODO: parallel HDF5 support case aims_save_type='hdf5'
     # TODO: density matrix, real-space grid V, etc
     # TODO: only dump S if we can calc S separately?
+    # TODO: support non-collinear spin and SOC cases
+    
