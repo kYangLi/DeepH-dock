@@ -632,3 +632,124 @@ class HamiltonianObj(AOMatrixObj):
             eigvecs = np.stack([res[1] for res in results], axis=2)
             
             return eigvals, eigvecs
+
+class AOWfnObj:
+    def __init__(self, kpts, wfnao, el, spinful=False, efermi=None, kgrid=None):
+        self.kpts = kpts
+        self.wfnao = wfnao
+        self.el = el
+        self.spinful = spinful
+        self.efermi = efermi
+        self.kgrid = kgrid
+        if kgrid is not None:
+            assert kpts.shape[0] == np.prod(kgrid)
+
+    def to_h5(self, h5_path):
+        assert self.kgrid is not None
+        with h5py.File(h5_path, 'w') as f:
+            f.create_dataset('kpts', data=self.kpts)
+            f.create_dataset('kgrid', data=self.kgrid)
+            f.create_dataset('wfnao', data=self.wfnao)
+            f.create_dataset('el', data=self.el)
+            f.create_dataset('efermi', data=self.efermi)
+            
+"""
+Aside: WfnAO object in the BSE program Pykernel (wfnao has shape (nk, nb, norb), and el has shape (nk, nb)):
+
+class WfnAO(PyKernelBase):
+    _PRINT_ITEMS = ("fname", "nk", "nb")
+
+    def __init__(self, poscar_fname, basis_path_root, wfnao_file, nv=None, nc=None):
+        with open(poscar_fname) as f:
+            structure = from_poscar(f)
+        aodata = AOData(structure, basis_path_root=basis_path_root, aocode='siesta')
+
+        with h5py.File(wfnao_file, "r") as h5file:
+            kpts = h5file['kpts'][:].T
+            kgrid = h5file['kgrid'][:]
+            wfnao = h5file['wfnao'][:]
+            el = h5file['el'][:]
+            efermi = h5file['efermi'][()]
+
+        self.orb_info_dict_spc, self.num_orbitals_tot = create_orbital_list(structure, aodata)
+        nspin = wfnao.shape[2] // self.num_orbitals_tot
+        self.nspin = nspin
+        self.dtype = {1: np.float64, 2: np.complex128}[self.nspin]
+        self.wfnao = wfnao.reshape((wfnao.shape[0], wfnao.shape[1], nspin, -1), order='C')  # (nk, nb, nspin, norb)
+
+        self.structure = structure
+        self.aodata = aodata
+        self.kpts = kpts
+        self.kgrid = kgrid
+        self.nk = kpts.shape[1]  # Number of k-points
+        self.el = el
+        self.efermi = efermi
+
+        if nv is not None and nc is not None:
+            idx_v = topN_less_than(self.el, self.efermi, nv)
+            idx_c = lastN_greater_than(self.el, self.efermi, nc)
+            band_indices = np.concatenate((idx_v, idx_c), axis=1)  # (nk, nv+nc)
+            self.wfnao = self.wfnao[np.arange(self.nk)[:, None], band_indices, :, :]
+            self.nb = band_indices.shape[1]
+        else:
+            self.nb = self.wfnao.shape[1]
+            
+        self.wfnao_grouped, self.positions_red_grouped = group_wfnao_all(self.wfnao, structure.atomic_species, aodata.nradial_spc, self.orb_info_dict_spc)
+        self.rgrids_info_spc = {'rcut': {}, 'l': {}}
+        self.nradial_spc = {}
+        for spc in structure.atomic_species:
+            phirgrids = aodata.phirgrids_spc[spc]
+            self.nradial_spc[spc] = aodata.nradial_spc[spc]
+            rcut_spc, l_spc = [], []
+            for _, phirgrid in enumerate(phirgrids):
+                rcut_spc.append(phirgrid.rgd.rfunc[-1])
+                l_spc.append(np.zeros((phirgrid.l,), dtype=np.int32))
+
+            self.rgrids_info_spc['rcut'][spc] = rcut_spc
+            self.rgrids_info_spc['l'][spc] = l_spc
+
+def group_wfnao_all(wfnao, atomic_species, nradial_spc, orb_info_dict_spc):
+    wfnao_grouped = {}
+    positions_red_grouped = {}
+
+    for spc in atomic_species:
+        wfnao_spc = []
+        positions_red_spc = orb_info_dict_spc['positions_red'][spc]
+
+        positions_red_grouped[spc] = positions_red_spc
+
+        for irad in range(nradial_spc[spc]):
+            idx_thisorbit = orb_info_dict_spc['orbital_idx'][spc][irad] # (natom_spc, 2l+1)
+            wfnao_thisorbit = wfnao[:, :, :, idx_thisorbit]  # (nk, nb, nspin, natom_spc, 2l+1)
+            wfnao_thisorbit = np.transpose(wfnao_thisorbit, (0, 3, 4, 1, 2))  # (nk, natom_spc, 2l+1, nband, nspin)
+
+            # (nk, n_device, natom_padded/gpus_per_process, 2l+1, nband, nspin)
+            wfnao_spc.append(wfnao_thisorbit)
+        wfnao_grouped[spc] = wfnao_spc
+
+    return wfnao_grouped, positions_red_grouped
+
+def topN_less_than(arr: np.ndarray, val: float, N: int) -> np.ndarray:
+    arr_masked = np.where(arr < val, arr, -np.inf)
+
+    idx = np.argpartition(arr_masked, -N, axis=1)[:, -N:]  # (M,N)
+
+    rows = np.arange(arr.shape[0])[:, None]
+    vals = arr_masked[rows, idx]  # (M,N)
+    order = np.argsort(vals, axis=1)
+
+    idx_sorted = np.take_along_axis(idx, order, axis=1)
+    return idx_sorted
+
+def lastN_greater_than(arr: np.ndarray, val: float, N: int) -> np.ndarray:
+    B = np.where(arr > val, arr, np.inf)
+
+    part_idx = np.argpartition(B, N-1, axis=1)[:, :N]
+
+    rows = np.arange(arr.shape[0])[:, None]
+    vals = B[rows, part_idx]
+    order = np.argsort(vals, axis=1)
+
+    idx_sorted = np.take_along_axis(part_idx, order, axis=1)
+    return idx_sorted
+"""
