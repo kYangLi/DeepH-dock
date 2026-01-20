@@ -9,7 +9,7 @@ float_keys = [
     'hartree_convergence_parameter',
     'harmonic_length_scale',
     'ini_linear_mix_param',
-    'ini_spin_mix_parma',
+    'ini_spin_mix_param',
     'initial_moment',
     'MD_MB_init',
     'MD_time_step',

@@ -9,7 +9,6 @@ from pyscf.pbc import gto as pbcgto
 
 from functools import wraps
 
-from deepx_dock.compute.eigen.hamiltonian import HamiltonianObj
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME, DEEPX_OVERLAP_FILENAME
 from deepx_dock.CONSTANT import DEEPX_POSITION_MATRIX_FILENAME
 from deepx_dock.CONSTANT import DEEPX_DENSITY_MATRIX_FILENAME
@@ -47,6 +46,11 @@ def rebuild_kpt_grid(lattice, kpts):
         k_grid.append(len(unique_coords))
     
     return np.asarray(k_grid, dtype=int)
+
+def _ift(R, ks, Mks):
+    phase = np.exp(-2j * np.pi * np.dot(ks, R))
+    MR = np.sum(phase[:, None, None] * Mks, axis=0) / len(ks)
+    return MR
 
 class PySCFDataHooker:
     '''
@@ -138,7 +142,7 @@ class PySCFDataHooker:
         old_kernel = mf.kernel
 
         if self.export_S and not (self.export_H or self.export_rho):
-            raise Warning("Overlap matrix export is enabled, but neither Hamiltonian nor Density matrix export is enabled. \n" \
+            raise ValueError("Overlap matrix export is enabled, but neither Hamiltonian nor Density matrix export is enabled. \n" \
             "Please use PySCFDataHooker.dump_ovlp() method to dump overlap matrix separately. \n" \
             "Overlap matrix will not be dumped.")
 
@@ -372,20 +376,30 @@ class PySCFDataHooker:
         # --------------------------------- #
         elements_INDEX = np.array([pyscf.gto.mole.charge(self.mol.atom_symbol(i)) for i in range(self.atoms_quantity)], dtype=int)
         self.elements:list[str] = [PERIODIC_TABLE_INDEX_TO_SYMBOL[idx] for idx in elements_INDEX]
+        # Sort atoms by species to ensure grouped elements in POSCAR (e.g. all C, then all H)
+        # Use stable sort to preserve relative order of atoms of the same species
+        self.sorted_atom_indices = np.argsort(self.elements, kind='stable')
+        self.sorted2orig = self.sorted_atom_indices
+        self.orig2sorted = np.zeros(self.atoms_quantity, dtype=int)
+        self.orig2sorted[self.sorted_atom_indices] = np.arange(self.atoms_quantity)
+
+        # Re-create atom_elem_dict based on sorted order
+        sorted_elements = [self.elements[i] for i in self.sorted_atom_indices]
+        self.atom_elem_dict:dict[str, int] = collections.Counter(sorted_elements)
         # --------------------------------- #
-        self.atom_elem_dict:dict[str, int] = collections.Counter(self.elements)
         _ao_labels:list[tuple[int, str, str, str]] =\
               self.mol.ao_labels(fmt=False) #[(index, name, nl, m)]
         self.ao_labels:list[tuple[int, int, int, int]] = [] #(atom_index, l, n, m)
 
         for i, ao in enumerate(_ao_labels):
-            l, m = self.lm[ao[2][1]][ao[3]]
-            n = int(ao[2][0]); atom_index = int(ao[0])
+            l, m = self.lm[ao[2][-1]][ao[3]]
+            # Fixed parsing of n for n >= 10
+            n = int(ao[2][:-1]); atom_index = int(ao[0])
             self.orbit_quantity_list[atom_index] += 1
             self.ao_labels.append((atom_index, l, n, m))
             elem = self.elements[atom_index]
         
-        # Sort indices based on keys: l > n > atom_index > m
+        # Sort indices based on keys: atom_index > l > n > m
         _sorted_indices = sorted(range(len(self.ao_labels)), key=lambda k: self.ao_labels[k])
 
         # --------------------------------- #
@@ -458,12 +472,16 @@ class PySCFDataHooker:
         atom_pairs = []
         chunk_shapes = []
         chunk_boundaries = [0,]
-        for i_atom in range(self.atoms_quantity):
+        for new_i_atom in range(self.atoms_quantity):
+            i_atom = self.sorted2orig[new_i_atom] # original index
             atom_i_orb_quantity = self.orbit_quantity_list[i_atom]
             for j, j_atom in enumerate(self.fnna_indices_list[i_atom]):
                 atom_j_orb_quantity = self.orbit_quantity_list[j_atom]
                 j_cell = self.fnna_cell_indices_list[i_atom][j]
-                atom_pairs.append(list(self.R_ijk[j_cell]) + [i_atom, j_atom])
+                
+                new_j_atom = self.orig2sorted[j_atom] # sorted index
+
+                atom_pairs.append(list(self.R_ijk[j_cell]) + [new_i_atom, new_j_atom])
                 chunk_shapes.append((atom_i_orb_quantity, atom_j_orb_quantity))
                 _size = atom_i_orb_quantity * atom_j_orb_quantity
                 chunk_boundaries.append(chunk_boundaries[-1] + _size)
@@ -478,9 +496,9 @@ class PySCFDataHooker:
         mx_r_dict:dict[tuple[int, int, int], np.ndarray] = {}
         for i_r, R_vec in enumerate(R_lst):
             if not self.spinful or self.spin_info == 1:
-                mx_r_dict[tuple(self.R_ijk[i_r])] = HamiltonianObj._ift(R_vec, self.kpts/2/np.pi, mx_k_lst).real
+                mx_r_dict[tuple(self.R_ijk[i_r])] = _ift(R_vec, self.kpts/2/np.pi, mx_k_lst).real
             else:
-                mx_r_dict[tuple(self.R_ijk[i_r])] = HamiltonianObj._ift(R_vec, self.kpts/2/np.pi, mx_k_lst)
+                mx_r_dict[tuple(self.R_ijk[i_r])] = _ift(R_vec, self.kpts/2/np.pi, mx_k_lst)
             
         return mx_r_dict
 
@@ -533,9 +551,13 @@ class PySCFDataHooker:
         bounds = self.matrix_info["chunk_boundaries"]
         for i_ap, atom_pair in enumerate(self.matrix_info["atom_pairs"]):
             nR_vec = tuple(atom_pair[:3])
-            atom_i_idx = atom_pair[3]; atom_j_idx = atom_pair[4]
-            transform_idx1 = self.basis_trans_index[atom_i_idx]
-            transform_idx2 = self.basis_trans_index[atom_j_idx]
+            atom_i_idx_new = atom_pair[3]; atom_j_idx_new = atom_pair[4]
+            # Convert back to original indices to find basis transform info
+            atom_i_idx = self.sorted2orig[atom_i_idx_new]
+            atom_j_idx = self.sorted2orig[atom_j_idx_new]
+
+            transform_idx1 = self.basis_trans_index[int(atom_i_idx)]
+            transform_idx2 = self.basis_trans_index[int(atom_j_idx)]
             _mx = mx_r_dict[nR_vec]
             _mx_block = self._transform(_mx, transform_idx1, transform_idx2, isspinful)
             entries[bounds[i_ap]*(isspinful+1)**2:bounds[i_ap+1]*(isspinful+1)**2] = _mx_block.reshape(-1)
@@ -559,11 +581,11 @@ class PySCFDataHooker:
     def _dump_info_json(self):
         file_path = os.path.join(self.deeph_path, DEEPX_INFO_FILENAME)
         info_json = {
-            "atoms_quantity": self.atoms_quantity,
-            "orbits_quantity": self.orbits_quantity,
+            "atoms_quantity": int(self.atoms_quantity),
+            "orbits_quantity": int(self.orbits_quantity),
             "orthogonal_basis": False,
-            "spinful": self.spinful,
-            "fermi_energy_eV": self.fermi_energy,
+            "spinful": bool(self.spinful),
+            "fermi_energy_eV": float(self.fermi_energy),
             "elements_orbital_map": self.elem_orb_map,
             "basis": self.mol.basis,
         }
@@ -583,7 +605,7 @@ class PySCFDataHooker:
             ' '.join(map(str, self.atom_elem_dict.values())) + '\n',
             "Cartesian\n",
         ] + [
-            '  ' + ' '.join(map(str, self.cart_coords[i])) + '\n'
+            '  ' + ' '.join(map(str, self.cart_coords[self.sorted2orig[i]])) + '\n'
             for i in range(self.atoms_quantity)
         ]
         with open(file_path, 'w') as fwp:
