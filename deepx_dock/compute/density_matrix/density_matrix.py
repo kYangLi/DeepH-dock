@@ -2,7 +2,7 @@ import numpy as np
 import libtetrabz
 
 from deepx_dock.compute.eigen.fermi_dos import FermiEnergyAndDOSGenerator
-from deepx_dock.compute.eigen.matrix import AOMatrixR, AOMatrixK
+from deepx_dock.compute.eigen.hamiltonian import AOMatrixR, AOMatrixK
 
 
 class DensityMatrixObj:
