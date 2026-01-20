@@ -21,7 +21,7 @@ class AOMatrixR:
     Properties:
     ----------
     Rs : np.array((N_R, 3), dtype=int)
-        Lattice displacements for inter-cell hoppings.
+        Lattice displacements for inter-cell hoppings, in fractional coordinates (integers).
         The displacements are expressed in terms of the lattice vectors.
         N_R is the number of displacements.
     
@@ -47,7 +47,7 @@ class AOMatrixK:
     Properties:
     ----------
     ks : np.array((N_k, 3), dtype=float)
-        Reciprocal lattice points for the Fourier transform.
+        Reciprocal lattice points for the Fourier transform, in fractional coordinates.
         N_k is the number of points.
     
     MKs : np.array((N_k, N_b, N_b), dtype=float/complex)
@@ -74,12 +74,12 @@ class AOMatrixK:
 
 class AOMatrixObj:
     """
-    Tight-binding Hamiltonian in the matrix form.
+    Tight-binding operator (matrix) in the matrix form.
     
-    This class constructs the Hamiltonian operator from the standard DeepH 
-    format data. The Hamiltonian and overlap matrix in real space (H(R) and S(R))
-    are constructed and can be Fourier transformed to the reciprocal space 
-    (H(k) and S(k)). The diagonalization of the Hamiltonian is also supported.
+    This class constructs the one-body operator (matrix) from the standard DeepH 
+    format data. The operator in real space (e.g. H(R) or S(R))
+    is constructed and can be Fourier transformed to the reciprocal space 
+    (e.g. H(k) or S(k)).
     
     Parameters
     ----------
@@ -130,13 +130,99 @@ class AOMatrixObj:
         self.Rijk_list = None
         #
         Rijk_only = False
-        if mats is not None:
+        if mats is not None or (matrix_file_path is None and mats is None):
             Rijk_only = True
+        #
         self.parse_data(matrix_type, Rijk_only)
         self._sort_Rijk()
-        if Rijk_only:
+        if mats is not None:
             self.mats = mats
-            assert self.R_quantity == len(mats)
+        assert self.R_quantity == len(mats), \
+            f"Mismatch: R_quantity={self.R_quantity}, mats_len={len(mats)}"
+    
+    @classmethod
+    def from_kspace(cls, info_dir_path, AOMatrixK_obj, matrix_type="hamiltonian", 
+                    r_process_num=1, thread_num=None):
+        """
+        Construct a real-space AOMatrixObj from a k-space AOMatrixK object via Inverse Fourier Transform.
+
+        This factory method initializes the real-space sparsity pattern (R-vectors) by reading 
+        the standard DeepH files (specifically `overlap.h5` for Rijk indices) from `info_dir_path`.
+        It then performs an Inverse Fourier Transform on the provided `AOMatrixK_obj` to reconstruction 
+        the real-space matrices H(R) or S(R) projected onto these R-vectors.
+
+        Parallel processing is supported to accelerate the transformation for large systems or dense k-grids.
+
+        Parameters
+        ----------
+        info_dir_path : str or Path
+            Path to the directory containing the standard DeepH input files 
+            (including `info.json`, `POSCAR`, and `overlap.h5`).
+            This is strictly required to determine the lattice structure and the 
+            sparsity pattern (Rijk_list) of the target real-space matrix.
+        
+        AOMatrixK_obj : AOMatrixK
+            The source k-space matrix object. It must contain the k-point mesh 
+            and the matrix values M(k), and implement a `k2r(Rs)` method.
+        
+        matrix_type : str, optional
+            The physical type of the matrix. Options are "hamiltonian", "overlap", 
+            or "density_matrix". Default is "hamiltonian".
+            If "overlap" is selected, the resulting matrix will be cast to real numbers.
+        
+        r_process_num : int, optional
+            Number of parallel processes (workers) to use for the Fourier transform.
+            Default is 1 (serial execution).
+        
+        thread_num : int, optional
+            Number of BLAS/OpenMP threads to use per process.
+            If None, it tries to read the `OPENBLAS_NUM_THREADS` environment variable, 
+            otherwise defaults to 1.
+            Note: When `r_process_num` > 1, it is recommended to keep `thread_num` small 
+            (e.g., 1 or 2) to avoid CPU oversubscription and performance degradation.
+
+        Returns
+        -------
+        AOMatrixObj
+            A new instance of AOMatrixObj. 
+            - Its `Rijk_list` is initialized from the file and sorted.
+            - Its `mats` attribute contains the transformed real-space matrices H(R).
+
+        """
+        obj = cls(info_dir_path, matrix_type=matrix_type)
+        
+        Rs = obj.Rijk_list
+        if Rs is None:
+            raise ValueError("Failed to initialize Rijk_list from info directory.")
+
+        def process_r_chunk(rs_chunk):
+            return AOMatrixK_obj.k2r(rs_chunk)
+
+        if thread_num is None:
+            thread_num = int(os.environ.get('OPENBLAS_NUM_THREADS', "1"))
+        
+        mats_list = []
+        with threadpoolctl.threadpool_limits(limits=thread_num, user_api='blas'):
+            if r_process_num == 1:
+                mats = AOMatrixK_obj.k2r(Rs)
+            else:
+                if len(Rs) > 0:
+                    n_chunks = r_process_num * 4 
+                    rs_chunks = np.array_split(Rs, n_chunks)
+                    
+                    results = Parallel(n_jobs=r_process_num)(
+                        delayed(process_r_chunk)(chunk) for chunk in tqdm(rs_chunks, leave=False, desc="K to R")
+                    )
+                    mats = np.concatenate(results, axis=0)
+                else:
+                    mats = np.zeros((0, obj.orbits_quantity, obj.orbits_quantity))
+
+        obj.mats = mats
+
+        if matrix_type == "overlap" and np.iscomplexobj(obj.mats):
+            obj.mats = np.real(obj.mats)
+
+        return obj
 
     def _sort_Rijk(self):
         tx = self.Rijk_list[:, 0]
@@ -354,6 +440,10 @@ class AOMatrixObj:
 
     @staticmethod
     def _read_h5(h5_path, dtype=np.float64):
+        h5_path_obj = Path(h5_path)
+        if not h5_path_obj.exists():
+            raise FileNotFoundError(f"File not found: {h5_path}")
+        #
         with h5py.File(h5_path, 'r') as f:
             atom_pairs = np.array(f["atom_pairs"][:], dtype=np.int64)
             boundaries = np.array(f["chunk_boundaries"][:], dtype=np.int64)

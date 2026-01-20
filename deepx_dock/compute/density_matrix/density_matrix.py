@@ -2,16 +2,24 @@ import numpy as np
 import libtetrabz
 
 from deepx_dock.compute.eigen.fermi_dos import FermiEnergyAndDOSGenerator
-from deepx_dock.compute.eigen.hamiltonian import AOMatrixR, AOMatrixK
+from deepx_dock.compute.eigen.hamiltonian import AOMatrixR, AOMatrixK, AOMatrixObj
 
 
-class DensityMatrixObj:
-    def __init__(self, info_dir_path, H_file_path=None):
-        self._get_necessary_data_path(info_dir_path, H_file_path)
-        #
-        self.mat_DM = None
-        #
-        self.parse_data()
+class DensityMatrixObj(AOMatrixObj):
+    def __init__(self, data_path, DM_file_path=None, mats=None):
+        super().__init__(data_path, DM_file_path, matrix_type="density_matrix", mats=mats)
+        overlap_obj = AOMatrixObj(data_path, matrix_type="overlap")
+        if self.mats is not None:
+            self.assert_compatible(overlap_obj)
+        self.SR = overlap_obj.mats
+
+    @property
+    def rho_R(self):
+        return self.mats
+
+    
+
+    
 
 class DensityMatrixGenerator(FermiEnergyAndDOSGenerator):
     
