@@ -46,6 +46,7 @@ string_keys = [
     'species_dir',
     'run_command',
     'plus_u',
+    'output_rs_matrices',
 ]
 
 int_keys = [

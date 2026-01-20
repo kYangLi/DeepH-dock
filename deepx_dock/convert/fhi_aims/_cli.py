@@ -41,11 +41,6 @@ def translate_vasp_to_deeph(aims_dir: Path, deeph_dir: Path, tier_num: int):
             'deeph_dir', type=click.Path(file_okay=False),
         ),
         click.option(
-            '--format', '-f', type=click.Choice(['plain', 'hdf5']), default='plain',
-            help="The output format of the aims data files. \n" \
-            "Please set same as the setting of output_rs_matrices in control.in"
-        ),
-        click.option(
             '--parallel-num', '-p', type=int, default=-1,
             help="The parallel processing number, -1 for using all of the cores."
         ),

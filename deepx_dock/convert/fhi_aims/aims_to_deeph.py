@@ -112,8 +112,15 @@ def _read_ctrl_in(aims_dir_path: Path):
     if 'spin' in ctrl_params.keys():
         if ctrl_params["spin"].lower() == 'collinear':
             spinful = True
+    aims_data_type:str = ctrl_params.get('output_rs_matrices', None)
+    if not aims_data_type:
+        raise ValueError("The 'output_rs_matrices' parameter is missing in control.in!")
+    if aims_data_type.lower() == 'hdf5':
+        raise NotImplementedError("The 'hdf5' output_rs_matrices type is not supported yet!")
+    elif aims_data_type.lower() not in ['plain', 'hdf5']:
+        raise ValueError(f"Unsupported 'output_rs_matrices' type: {aims_data_type}!")
 
-    return ctrl_params, spinful
+    return ctrl_params, spinful, aims_data_type.lower()
 
 def _parse_struct(aims_dir_path: Path):
     atoms_path = Path(aims_dir_path) / AIMS_STRUCT_FILENAME
@@ -449,9 +456,9 @@ class FHIAimsReader:
         self.deeph_path = Path(deeph_path)
         self.mx_lst:list[np.ndarray] = []  # list of sparse matrix
 
-    def analysis_data(self, aims_save_type: str = 'plain'):   # plain / hdf5
-        # ------------ calculatiom parameters from control.in ------------
-        self.ctrl_params, self.spinful = _read_ctrl_in(self.aims_path)
+    def analysis_data(self):
+        # ------------ calculation parameters from control.in ------------
+        self.ctrl_params, self.spinful, self.aims_data_type = _read_ctrl_in(self.aims_path)  # TODO: plain / hdf5
         # ------------ structure info from geometry.in ------------
         self.is_periodic, self.lat, self.site_positions, \
         self.element, self.species, sort_idxs = _parse_struct(self.aims_path)
