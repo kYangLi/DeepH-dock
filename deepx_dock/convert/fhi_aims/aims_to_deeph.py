@@ -375,13 +375,13 @@ def _read_fermi(aims_dir_path: Path):
     fermi_energy = 0.0
     '''
     ref:
-        | Chemical potential (Fermi level): xx eV
+        | Chemical potential (Fermi level) in eV      :  -.53575976E+01
     '''
     with open(log_path, 'r') as f:
         lines = f.readlines()
     for line in lines:
-        if "| Chemical potential (Fermi level):" in line:
-            fermi_energy = float(line.strip().split()[-2])
+        if "| Chemical potential (Fermi level) in eV" in line:
+            fermi_energy = float(line.split(':')[-1].strip())
             break
     return fermi_energy
 
@@ -677,7 +677,5 @@ class FHIAimsReader:
     # TODO: parallel HDF5 support case aims_save_type='hdf5'
     # TODO: density matrix, real-space grid V, etc
     # TODO: only dump S if we can calc S separately?
-    # TODO: support non-collinear spin and SOC cases
-    
     # TODO: support non-collinear spin and SOC cases
     
