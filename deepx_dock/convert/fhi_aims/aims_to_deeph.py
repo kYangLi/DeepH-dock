@@ -674,7 +674,10 @@ class FHIAimsReader:
                 'entries', data=self.entries_lst[1]
             )
 
+    # TODO: parallel HDF5 support case aims_save_type='hdf5'
     # TODO: density matrix, real-space grid V, etc
     # TODO: only dump S if we can calc S separately?
+    # TODO: support non-collinear spin and SOC cases
+    
     # TODO: support non-collinear spin and SOC cases
     
