@@ -122,7 +122,7 @@ class AOWfnObj:
         #
         return np.vstack([b1, b2, b3])
 
-    def to_real_space(self, ik, ib, gridsize, n_jobs=-1):
+    def to_real_space(self, ik, ib, gridsize, process_num_per_grid=1):
         """
         Compute the periodic part of Bloch wavefunction u_{nk}(r) = e^{-ikr} * psi_{nk}(r).
         
@@ -130,7 +130,7 @@ class AOWfnObj:
             ik: int, k point index
             ib: int, band index
             gridsize: np.ndarray (3,), real space grid size
-            n_jobs: int, number of parallel jobs
+            process_num_per_grid: int, number of processes for a single real space grid
         
         Returns:
             u_grid: np.ndarray (nx, ny, nz), complex, Bloch wavefunction values in real space
@@ -229,7 +229,7 @@ class AOWfnObj:
         batches = np.array_split(coarse_indices, n_batches)
         
         with threadpoolctl.threadpool_limits(limits=1, user_api='blas'):
-            results = Parallel(n_jobs=n_jobs, prefer="processes")(
+            results = Parallel(n_jobs=process_num_per_grid, prefer="processes")(
                 delayed(self._calc_u_batch)(batch_idxs, ctx) for batch_idxs in batches
             )
 
