@@ -23,6 +23,12 @@ class AOWfnObj:
 
     Parameters
     ----------
+    info_dir_path : str | Path
+        Directory path to the info file.
+    basis_dir_path : str | Path
+        Directory path to the basis file.
+    aocode : str
+        Atomic orbital code. Currently only supports "siesta".
     kpts : np.ndarray
         k-points in reduced coordinates (fractional), shape (Nk, 3).
     wfnao : np.ndarray
@@ -63,12 +69,6 @@ class AOWfnObj:
             f.create_dataset('wfnao', data=self.wfnao)
             f.create_dataset('el', data=self.el)
             f.create_dataset('efermi', data=self.efermi)
-
-    def to_dm(self, representation='k'):
-        pass
-
-    def to_real_space(self, gridsize):
-        pass
 
     def _get_necessary_data_path(self,
         info_dir_path: str | Path, basis_dir_path: str | Path
@@ -242,6 +242,9 @@ class AOWfnObj:
             u_grid_flat[lin_idxs] = vals
             
         return u_grid_flat.reshape(gridsize)
+
+    def to_dm(self, representation='k'):
+        pass
 
     @staticmethod
     def _calc_u_batch(coarse_idxs, ctx):
