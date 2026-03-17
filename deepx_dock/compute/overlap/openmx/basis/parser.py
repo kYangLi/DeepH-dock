@@ -7,7 +7,7 @@ files and convert them to the unified BasisSet format.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 import re
 import numpy as np
 
@@ -17,6 +17,26 @@ from .schema import (
     RadialGrid,
     GridType,
 )
+
+
+@dataclass
+class ContractionSet:
+    """
+    Contraction coefficients for one optimization set.
+
+    OpenMX PAO files can contain multiple contraction sets (typically 3),
+    each optimized for different molecular environments.
+
+    Attributes
+    ----------
+    set_id : int
+        Contraction set identifier (1, 2, or 3)
+    coefficients : dict
+        (L, mul) -> array of contraction coefficients for primitives 0..num_mu-1
+    """
+
+    set_id: int
+    coefficients: Dict[tuple, np.ndarray]
 
 
 @dataclass
@@ -43,7 +63,7 @@ class PAORawData:
     lmax : int
         Maximum angular momentum quantum number
     num_mu : int
-        Number of radial functions per angular momentum
+        Number of primitive radial functions per angular momentum
     radial_cutoff : float
         Radial cutoff distance in Bohr
     xv : np.ndarray
@@ -51,11 +71,15 @@ class PAORawData:
     rv : np.ndarray
         Radial distances r, shape: (N,)
     radial_wf : dict
-        Radial wave functions, L -> array of shape (num_mu, N)
+        Primitive radial wave functions, L -> array of shape (num_mu, N)
     eigenvalues : dict
         Eigenvalues, L -> array of shape (num_mu,)
     valence_density : np.ndarray
         Valence electron density, shape: (N,)
+    contractions : list
+        List of ContractionSet objects
+    num_opt_pao : int
+        Number of contraction sets (number.optpao)
     """
 
     atom_species: int
@@ -73,6 +97,8 @@ class PAORawData:
     radial_wf: Dict[int, np.ndarray]
     eigenvalues: Dict[int, np.ndarray]
     valence_density: np.ndarray
+    contractions: List[ContractionSet]
+    num_opt_pao: int
 
 
 def parse_pao_file(filepath: str | Path) -> PAORawData:
@@ -117,11 +143,13 @@ def parse_pao_file(filepath: str | Path) -> PAORawData:
         "lmax": None,
         "num_mu": None,
         "radial_cutoff": None,
+        "num_opt_pao": 0,
         "xv": [],
         "rv": [],
         "radial_wf": {},
         "eigenvalues": {},
         "valence_density": [],
+        "contractions": [],
     }
 
     with open(filepath, "r") as f:
@@ -164,6 +192,9 @@ def parse_pao_file(filepath: str | Path) -> PAORawData:
 
         elif line.startswith("radial.cutoff.pao"):
             data["radial_cutoff"] = float(line.split()[1])
+
+        elif line.startswith("number.optpao"):
+            data["num_opt_pao"] = int(line.split()[1])
 
         elif line.startswith("<valence.charge.density"):
             i += 1
@@ -210,6 +241,42 @@ def parse_pao_file(filepath: str | Path) -> PAORawData:
                     except (ValueError, IndexError):
                         pass
                 i += 1
+            continue
+
+        elif re.match(r"<Contraction\.coefficients(\d+)", line):
+            match = re.match(r"<Contraction\.coefficients(\d+)", line)
+            set_id = int(match.group(1))
+            i += 1
+
+            num_coeff_line = lines[i].strip() if i < len(lines) else "0"
+            num_coeffs = int(num_coeff_line.split()[0]) if num_coeff_line else 0
+            i += 1
+
+            coefficients = {}
+            for _ in range(num_coeffs):
+                if i >= len(lines):
+                    break
+                coeff_line = lines[i].strip()
+                if coeff_line.startswith("Contraction.coefficients"):
+                    i += 1
+                    continue
+
+                match = re.search(r"L\s*=\s*(\d+)\s+Mul\s*=\s*(\d+)\s+p\s*=\s*(\d+)\s+([\d.\-+eE]+)", coeff_line)
+                if match:
+                    L = int(match.group(1))
+                    mul = int(match.group(2))
+                    p = int(match.group(3))
+                    c = float(match.group(4))
+
+                    key = (L, mul)
+                    if key not in coefficients:
+                        num_mu = data["num_mu"] if data["num_mu"] else 15
+                        coefficients[key] = np.zeros(num_mu)
+                    coefficients[key][p] = c
+                i += 1
+
+            if coefficients:
+                data["contractions"].append(ContractionSet(set_id=set_id, coefficients=coefficients))
             continue
 
         elif "pseudo.atomic.orbitals.L=" in line and line.startswith("<"):
@@ -273,10 +340,50 @@ def parse_pao_file(filepath: str | Path) -> PAORawData:
         radial_wf=data["radial_wf"],
         eigenvalues=data["eigenvalues"],
         valence_density=data["valence_density"],
+        contractions=data["contractions"],
+        num_opt_pao=data["num_opt_pao"],
     )
 
 
-def convert_pao_to_basis_set(pao_data: PAORawData) -> BasisSet:
+def apply_contraction(
+    primitive_wf: Dict[int, np.ndarray], contraction: ContractionSet, num_grid: int
+) -> Dict[tuple, np.ndarray]:
+    """
+    Apply contraction coefficients to primitive wavefunctions.
+
+    Parameters
+    ----------
+    primitive_wf : dict
+        L -> array of shape (num_mu, N) for primitive wavefunctions
+    contraction : ContractionSet
+        Contraction coefficients
+    num_grid : int
+        Number of grid points (expected, may differ from actual)
+
+    Returns
+    -------
+    dict
+        (L, mul) -> contracted wavefunction of shape (N,)
+    """
+    contracted = {}
+    num_mu = primitive_wf[list(primitive_wf.keys())[0]].shape[0] if primitive_wf else 15
+    actual_grid = primitive_wf[list(primitive_wf.keys())[0]].shape[1] if primitive_wf else num_grid
+
+    for (L, mul), coeffs in contraction.coefficients.items():
+        if L not in primitive_wf:
+            continue
+
+        wf = np.zeros(actual_grid)
+        for p in range(min(len(coeffs), num_mu)):
+            if abs(coeffs[p]) > 1e-15 and p < primitive_wf[L].shape[0]:
+                wf += coeffs[p] * primitive_wf[L][p, :]
+
+        contracted[(L, mul)] = wf
+
+    return contracted
+
+
+def convert_pao_to_basis_set(pao_data: PAORawData, use_contractions: bool = False) -> BasisSet:
     """
     Convert parsed PAO data to BasisSet format.
 
@@ -284,6 +391,9 @@ def convert_pao_to_basis_set(pao_data: PAORawData) -> BasisSet:
     ----------
     pao_data : PAORawData
         Parsed PAO data
+    use_contractions : bool
+        If True and contractions exist, use contracted orbitals.
+        If False, use primitive orbitals (default).
 
     Returns
     -------
@@ -300,36 +410,99 @@ def convert_pao_to_basis_set(pao_data: PAORawData) -> BasisSet:
         raise ValueError("No radial grid data found")
 
     dr = np.gradient(pao_data.rv)
+    num_grid = pao_data.grid_num_output
 
-    grid = RadialGrid(grid_type=GridType.LOG, num_points=pao_data.grid_num_output, x=pao_data.xv, r=pao_data.rv, dr=dr)
+    grid = RadialGrid(grid_type=GridType.LOG, num_points=num_grid, x=pao_data.xv, r=pao_data.rv, dr=dr)
 
-    eigenvalues_list = []
-    for L in range(pao_data.lmax + 1):
-        if L in pao_data.eigenvalues:
-            eigenvalues_list.append(pao_data.eigenvalues[L])
-        else:
-            eigenvalues_list.append(np.zeros(pao_data.num_mu))
-    eigenvalues = np.array(eigenvalues_list)
+    if use_contractions and pao_data.contractions:
+        lmax = pao_data.lmax
+        contracted_orbitals = {}
+        l_mul_counter = {}
 
-    metadata = BasisMetadata(
-        radial_cutoff=pao_data.radial_cutoff,
-        lmax=pao_data.lmax,
-        num_mu=pao_data.num_mu,
-        grid_type=GridType.LOG,
-        grid_num=pao_data.grid_num_output,
-        eigenvalues=eigenvalues,
-    )
+        for contraction in pao_data.contractions:
+            contracted = apply_contraction(pao_data.radial_wf, contraction, num_grid)
+            for (L, orig_mul), wf in contracted.items():
+                if L not in l_mul_counter:
+                    l_mul_counter[L] = 0
+                new_mul = l_mul_counter[L]
+                l_mul_counter[L] += 1
+                contracted_orbitals[(L, new_mul)] = wf
 
-    radial_wf_list = []
-    for L in range(pao_data.lmax + 1):
-        if L in pao_data.radial_wf:
-            wf_L = pao_data.radial_wf[L]
-            if wf_L.shape[1] < pao_data.grid_num_output:
-                wf_L = np.pad(wf_L, ((0, 0), (0, pao_data.grid_num_output - wf_L.shape[1])), mode="constant")
+        l_counts = {}
+        for L, mul in contracted_orbitals.keys():
+            l_counts[L] = l_counts.get(L, 0) + 1
+
+        max_mu_per_l = max(l_counts.values()) if l_counts else pao_data.num_mu
+
+        actual_grid = list(contracted_orbitals.values())[0].shape[0] if contracted_orbitals else num_grid
+
+        eigenvalues_list = []
+        for L in range(lmax + 1):
+            num_mu_L = l_counts.get(L, 0)
+            if num_mu_L > 0:
+                eig_L = np.zeros(max_mu_per_l)
+                if L in pao_data.eigenvalues:
+                    for i, e in enumerate(pao_data.eigenvalues[L][:num_mu_L]):
+                        eig_L[i] = e
+                eigenvalues_list.append(eig_L)
+            else:
+                eigenvalues_list.append(np.zeros(max_mu_per_l))
+        eigenvalues = np.array(eigenvalues_list)
+
+        actual_rv = pao_data.rv[:actual_grid] if len(pao_data.rv) >= actual_grid else pao_data.rv
+        actual_xv = pao_data.xv[:actual_grid] if len(pao_data.xv) >= actual_grid else pao_data.xv
+        actual_dr = np.gradient(actual_rv)
+
+        grid = RadialGrid(grid_type=GridType.LOG, num_points=actual_grid, x=actual_xv, r=actual_rv, dr=actual_dr)
+
+        metadata = BasisMetadata(
+            radial_cutoff=pao_data.radial_cutoff,
+            lmax=lmax,
+            num_mu=max_mu_per_l,
+            grid_type=GridType.LOG,
+            grid_num=actual_grid,
+            eigenvalues=eigenvalues,
+        )
+
+        radial_wf_list = []
+        for L in range(lmax + 1):
+            wf_L = np.zeros((max_mu_per_l, actual_grid))
+            mu_idx = 0
+            for (l_key, mul_key), wf in sorted(contracted_orbitals.items()):
+                if l_key == L and mu_idx < max_mu_per_l:
+                    wf_L[mu_idx, : min(len(wf), actual_grid)] = wf[: min(len(wf), actual_grid)]
+                    mu_idx += 1
             radial_wf_list.append(wf_L)
-        else:
-            radial_wf_list.append(np.zeros((pao_data.num_mu, pao_data.grid_num_output)))
-    radial_wf = np.array(radial_wf_list)
+        radial_wf = np.array(radial_wf_list)
+
+    else:
+        eigenvalues_list = []
+        for L in range(pao_data.lmax + 1):
+            if L in pao_data.eigenvalues:
+                eigenvalues_list.append(pao_data.eigenvalues[L])
+            else:
+                eigenvalues_list.append(np.zeros(pao_data.num_mu))
+        eigenvalues = np.array(eigenvalues_list)
+
+        metadata = BasisMetadata(
+            radial_cutoff=pao_data.radial_cutoff,
+            lmax=pao_data.lmax,
+            num_mu=pao_data.num_mu,
+            grid_type=GridType.LOG,
+            grid_num=num_grid,
+            eigenvalues=eigenvalues,
+        )
+
+        radial_wf_list = []
+        for L in range(pao_data.lmax + 1):
+            if L in pao_data.radial_wf:
+                wf_L = pao_data.radial_wf[L]
+                if wf_L.shape[1] < num_grid:
+                    wf_L = np.pad(wf_L, ((0, 0), (0, num_grid - wf_L.shape[1])), mode="constant")
+                radial_wf_list.append(wf_L)
+            else:
+                radial_wf_list.append(np.zeros((pao_data.num_mu, num_grid)))
+        radial_wf = np.array(radial_wf_list)
 
     name = f"{pao_data.radial_cutoff:.1f}"
 
@@ -341,3 +514,32 @@ def convert_pao_to_basis_set(pao_data: PAORawData) -> BasisSet:
         k_space=None,
         valence_density=pao_data.valence_density if len(pao_data.valence_density) > 0 else None,
     )
+
+
+def get_contracted_orbital_count(pao_data: PAORawData) -> Dict[int, int]:
+    """
+    Get the number of contracted orbitals per angular momentum.
+
+    Parameters
+    ----------
+    pao_data : PAORawData
+        Parsed PAO data
+
+    Returns
+    -------
+    dict
+        L -> number of contracted orbitals
+    """
+    if not pao_data.contractions:
+        return {L: pao_data.num_mu for L in range(pao_data.lmax + 1)}
+
+    l_counts = {}
+    for contraction in pao_data.contractions:
+        for L, mul in contraction.coefficients.keys():
+            l_counts[L] = l_counts.get(L, 0) + 1
+
+    for L in range(pao_data.lmax + 1):
+        if L not in l_counts:
+            l_counts[L] = 0
+
+    return l_counts
