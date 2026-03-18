@@ -150,6 +150,78 @@ def _parse_struct(aims_dir_path: Path):
 
     return is_periodic, lat, site_positions, element, species, sort_idxs
 
+def _check_and_fix_basis_idx(aims_dir_path: Path):
+    '''
+    basis-indices.out file:
+        
+        >>>   (blank)
+        >>>   fn.   type   at.   n   l   m
+        >>>    1  atomic    1    1   0   0
+        >>>   ...
+
+    we will check whether the at.(atom_index) is int, not *** (because of the aims output setting that write at. with I3, >999 atom will output ***.)
+    
+    and the at. match the order of n.
+    '''
+    basis_path = Path(aims_dir_path) / AIMS_BASIS_FILENAME
+
+    with open(basis_path, 'r') as bs_idx_file:
+        basis_info = bs_idx_file.readlines()
+    
+    this_line_info = []
+    prev_line_info = []
+    this_line_atom_index = 1
+    this_line_basis_index = 1
+    skips = ["   ", " ", "      ", "   ", "   ", "   "]
+
+    for idx_line, line_info in enumerate(basis_info):
+        if line_info.strip() == '':
+            continue
+        this_line_info = line_info.split()
+        if this_line_info[0].startswith('fn'):
+            continue
+        if len(this_line_info) < 6:
+            raise ValueError(f"Invalid basis line: {line_info}")
+        
+        if len(prev_line_info) == 0:
+            prev_line_info = this_line_info.copy()
+            continue
+
+        line_modified = False
+
+        try:
+            this_line_basis_index = int(this_line_info[0])
+        except ValueError: #while ***
+            this_line_basis_index = int(prev_line_info[0]) + 1
+            this_line_info[0] = str(this_line_basis_index)
+            line_modified = True
+        
+        try:
+            this_line_atom_index = int(this_line_info[2])  # if atom_index is int
+        except ValueError: # while ***
+            line_modified = True
+            prev_n = int(prev_line_info[3])
+            this_n = int(this_line_info[3])
+            assert this_n > 0, f"Invalid basis line: {this_line_info}"
+            if this_n == 1:
+                assert (int(this_line_info[4]) == 0 and int(this_line_info[5]) == 0), f"Invalid basis line: {this_line_info}" # n=1, l=0, m=0
+                if this_n < prev_n:
+                    this_line_atom_index += 1
+                elif prev_n == 1: # H
+                    if (prev_line_info[1] == this_line_info[1] and prev_line_info[3] == this_line_info[3]
+                        and prev_line_info[4] == this_line_info[4] and prev_line_info[5] == this_line_info[5]):
+                        this_line_atom_index +=1
+            this_line_info[2] = str(this_line_atom_index)
+            
+        if line_modified:
+            # basis_info = skips[0]+info[0]+skips[1]+info[1]+...
+            basis_info[idx_line] = "".join([skips[i] + this_line_info[i] for i in range(len(this_line_info))]) + "\n"
+        
+        prev_line_info = this_line_info.copy()
+
+    with open(basis_path, 'w') as bs_idx_file:
+        bs_idx_file.writelines(basis_info)
+
 def _parse_basis(aims_dir_path: Path, atomic_num: int, species: list[str], sort_idxs: np.ndarray):
     basis_path = Path(aims_dir_path) / AIMS_BASIS_FILENAME
 
@@ -180,11 +252,16 @@ def _parse_basis(aims_dir_path: Path, atomic_num: int, species: list[str], sort_
     # TODO: like SingleAtom, parse basis types into more detailed info if necessary
 
     orbit_quantity_list:list[int] = [int(0)] * N_atom   # for matrix info
-    # Sort indices based on keys: l > n > atom_index > m > basis_type
+    # Sort indices based on keys: l > n > m > atom_index > basis_type
+    # now, not sort.
+    '''
     _sorted_indices = sorted(range(basis_indices.shape[0]), 
                              key=lambda k: (basis_indices[k,3], basis_indices[k,2],
-                                            basis_indices[k,1], basis_indices[k,4],
+                                            basis_indices[k,4], basis_indices[k,1],
                                             BASIS_TYPE_ORDER[basis_types[k]]))
+    '''
+    # NOT USE SORT!
+    _sorted_indices = range(N_orb)
     atom_elem_dict:dict[str, int] = collections.Counter(species)  # for POSCAR
     _elem_orb_map:dict[int, list[str]] = {}
     elem_orb_map:dict[str, list[int]] = {}
@@ -311,7 +388,7 @@ column_index_hamiltonian
     col_idx -= 1            # not have index <0
 
     return n_ham_size, n_cells, n_basis, \
-            np.array(cell_indices, dtype=int), \
+           -np.array(cell_indices, dtype=int), \
             start_idx_matrix, end_idx_matrix, col_idx
 
 def _read_mx_val(file_path: Path, n_ham_size: int):
@@ -516,6 +593,7 @@ class FHIAimsReader:
         self.element, self.species, sort_idxs = _parse_struct(self.aims_path)
         assert self.is_periodic, "Only periodic system is supported!"
         # ------------ basis info from basis-indices.out ------------
+        _check_and_fix_basis_idx(self.aims_path)
         self.phase_factor, self.orbit_quantity_list, self.atom_elem_dict, \
         self.elem_orb_map, self.basis_trans_index, N_atom, N_orb, self.sub_idx = _parse_basis(
             self.aims_path, len(self.element), self.species, sort_idxs
