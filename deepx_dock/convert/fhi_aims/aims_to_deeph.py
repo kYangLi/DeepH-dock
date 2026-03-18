@@ -664,7 +664,6 @@ class FHIAimsReader:
         assert self.is_periodic, "Only periodic system is supported!"
         # ------------ basis info from basis-indices.out ------------
         _check_and_fix_basis_idx(self.aims_path)
-        _check_and_fix_basis_idx(self.aims_path)
         self.phase_factor, self.orbit_quantity_list, self.atom_elem_dict, \
         self.elem_orb_map, self.basis_trans_index, N_atom, N_orb, self.sub_idx = _parse_basis(
             self.aims_path, len(self.element), self.species, sort_idxs
