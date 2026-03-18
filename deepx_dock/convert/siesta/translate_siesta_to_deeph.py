@@ -5,12 +5,9 @@ import json
 import h5py
 from scipy.io import FortranFile
 from scipy.sparse import csr_matrix
-
-from tqdm import tqdm
-
 from functools import partial
-from joblib import Parallel, delayed
 
+from deepx_dock.parallel import parallel_map
 from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
 from deepx_dock.CONSTANT import DEEPX_DENSITY_MATRIX_FILENAME
@@ -87,17 +84,18 @@ class SIESTADatasetTranslator:
             export_rho=self.export_rho,
             export_r=self.export_r,
         )
-        data_dir_lister = get_data_dir_lister(
-            self.siesta_data_dir, self.n_tier, validation_check_siesta
-        )
-        Parallel(n_jobs=self.n_jobs)(
-            delayed(worker)(dir_name) for dir_name in tqdm(data_dir_lister, desc="Data")
-        )
+        data_dir_lister = get_data_dir_lister(self.siesta_data_dir, self.n_tier, validation_check_siesta)
+        parallel_map(worker, data_dir_lister, n_jobs=self.n_jobs, desc="Data")
 
     @staticmethod
     def transfer_one_siesta_to_deeph(
-        dir_name: str, siesta_path: Path, deeph_path: Path,
-        export_S=True, export_H=True, export_rho=False, export_r=False,
+        dir_name: str,
+        siesta_path: Path,
+        deeph_path: Path,
+        export_S=True,
+        export_H=True,
+        export_rho=False,
+        export_r=False,
     ):
         try:
             siesta_dir_path = siesta_path / dir_name
@@ -137,16 +135,12 @@ class SIESTAReader:
         if export_H:
             self._get_matrix_info("hamiltonians")
             self._slice("hamiltonians", consider_spin=True)
-            self._dump_matrix(
-                "hamiltonians", DEEPX_HAMILTONIAN_FILENAME, consider_spin=True
-            )
+            self._dump_matrix("hamiltonians", DEEPX_HAMILTONIAN_FILENAME, consider_spin=True)
         if export_rho:
             self._read_rho()
             self._get_matrix_info("density_matrixs")
             self._slice("density_matrixs", consider_spin=True)
-            self._dump_matrix(
-                "density_matrixs", DEEPX_DENSITY_MATRIX_FILENAME, consider_spin=True
-            )
+            self._dump_matrix("density_matrixs", DEEPX_DENSITY_MATRIX_FILENAME, consider_spin=True)
         if export_r:
             raise NotImplementedError("Position matrix export is not implemented yet.")
 
@@ -169,39 +163,31 @@ class SIESTAReader:
                     self.nspin = int(line.split()[-1])
                     self.spinful = self.nspin > 1
         if self.siesta_version is not None:
-            assert self.siesta_version.split(".")[0] == "5", (
-                "Only Siesta version 5.x is supported."
-            )
+            assert self.siesta_version.split(".")[0] == "5", "Only Siesta version 5.x is supported."
 
     def _get_fermi_energy(self):
         eig_name = f"{self.slabel}.{SIESTA_EIG_FILE_Extension}"
         siesta_eig_path = self.siesta_path / eig_name
-        
+
         if siesta_eig_path.exists():
             with open(siesta_eig_path) as eig_f:
                 self.fermi_energy = float(eig_f.readline().strip())
         else:
             self.fermi_energy = None
-            print(f'WARN in {self.siesta_path}: Cannot find fermi energy')
+            print(f"WARN in {self.siesta_path}: Cannot find fermi energy")
 
     def _get_structure(self):
         xv_name = f"{self.slabel}.{SIESTA_XV_FILE_Extension}"
         siesta_xv_path = self.siesta_path / xv_name
         with open(siesta_xv_path, "r") as f:
             xv_info = f.readlines()
-        self.lattice = (
-            np.genfromtxt(xv_info[:3], dtype=float, usecols=(0, 1, 2))
-            * BOHR_TO_ANGSTROM
-        )
+        self.lattice = np.genfromtxt(xv_info[:3], dtype=float, usecols=(0, 1, 2)) * BOHR_TO_ANGSTROM
         xv_info = np.genfromtxt(xv_info[4:])
         self.elements = xv_info[:, 1].astype(int)
         self.cart_coords = xv_info[:, 2:5] * BOHR_TO_ANGSTROM
         self.atoms_quantity = len(self.cart_coords)
         self.atom_elem_order_dict = dict(collections.Counter(self.elements))
-        self.atom_elem_order_dict = {
-            PERIODIC_TABLE_INDEX_TO_SYMBOL[k]: []
-            for k in self.atom_elem_order_dict.keys()
-        }
+        self.atom_elem_order_dict = {PERIODIC_TABLE_INDEX_TO_SYMBOL[k]: [] for k in self.atom_elem_order_dict.keys()}
         for i, elem in enumerate(self.elements):
             elem_symbol = PERIODIC_TABLE_INDEX_TO_SYMBOL[elem]
             self.atom_elem_order_dict[elem_symbol].append(i)
@@ -217,20 +203,12 @@ class SIESTAReader:
             line = orb_info[0]
             self.orbits_quantity = int(line.split()[0])
             self.supercell_orbits_quantity = int(line.split()[1])
-            self.number_supercells = int(
-                self.supercell_orbits_quantity / self.orbits_quantity
-            )
-        self.orb_R_info = np.genfromtxt(
-            orb_info[3:], dtype=int, skip_footer=17, usecols=(12, 13, 14)
-        )
-        self.orb_R_info, first_indices = np.unique(
-            self.orb_R_info, axis=0, return_index=True
-        )
+            self.number_supercells = int(self.supercell_orbits_quantity / self.orbits_quantity)
+        self.orb_R_info = np.genfromtxt(orb_info[3:], dtype=int, skip_footer=17, usecols=(12, 13, 14))
+        self.orb_R_info, first_indices = np.unique(self.orb_R_info, axis=0, return_index=True)
         self.orb_R_info = self.orb_R_info[np.argsort(first_indices)]
         self.orb_R_info = [tuple(R) for R in self.orb_R_info.tolist()]
-        orb_indx = np.genfromtxt(
-            orb_info[3 : 3 + self.orbits_quantity], dtype=int, filling_values=-100
-        )
+        orb_indx = np.genfromtxt(orb_info[3 : 3 + self.orbits_quantity], dtype=int, filling_values=-100)
         self.elem_orb_map = {}
         self.elem_orb_sort = {}
         self.elem_orb_parity = {}
@@ -292,9 +270,7 @@ class SIESTAReader:
                 nonzero_cols_in_ia_block = indices[start_ptr:end_ptr]
                 cols_expanded = nonzero_cols_in_ia_block[:, np.newaxis]
 
-                overlap_matrix = (cols_expanded >= atom_col_starts) & (
-                    cols_expanded < atom_col_ends
-                )
+                overlap_matrix = (cols_expanded >= atom_col_starts) & (cols_expanded < atom_col_ends)
 
                 connected_ja_indices = np.where(np.any(overlap_matrix, axis=0))[0]
 
@@ -327,12 +303,12 @@ class SIESTAReader:
         f = FortranFile(siesta_hsx_path, "r")
         version = f.read_ints()[0]  # version of HSX file
         if version > 2:
-            print(f"WARN in {self.siesta_path}: The HSX file version is {version}, which is not tested yet. BE CAREFUL!")
+            print(
+                f"WARN in {self.siesta_path}: The HSX file version is {version}, which is not tested yet. BE CAREFUL!"
+            )
         is_dp = f.read_ints()[0]  # whether data is double precision
         if is_dp == 0:
-            raise NotImplementedError(
-                "Only double-precision HSX files are supported."
-            )
+            raise NotImplementedError("Only double-precision HSX files are supported.")
         tmpt = f.read_ints()  # na_u, no_u, spin, species, nscx, nscy, nscz
         na_u = tmpt[0]
         assert self.nspin == tmpt[2], "The number of spin components is inconsistent."
@@ -342,31 +318,54 @@ class SIESTAReader:
             )
         nspecies = tmpt[3]
         nsc = tmpt[4:7]
-        if np.allclose(nsc, np.array([1,1,1])):
-            print(f"WARN in {self.siesta_path}: The system appears to be a cluster! If you are calculating extended systems, please set `ForceAuxCell true` in your fdf file and run SIESTA again.")
-        tmpt = f.read_reals()  # 0~8: lattice parameter/Bohr, 9: fermi level/au, 10: total charge, 11: electronic temperature
-        tmpt = f.read_record(dtype=np.byte) # isc(nscx*nscy*nscz,3), xa(na_u,3)/Bohr in column-major, isa(na_u), lasto(na_u)
-        isc = np.frombuffer(tmpt[:4*3*nsc[0]*nsc[1]*nsc[2]], dtype=np.int32).reshape(nsc[0]*nsc[1]*nsc[2], 3)
-        tmpt = tmpt[4*3*nsc[0]*nsc[1]*nsc[2]:]
-        xa = np.frombuffer(tmpt[:8*3*na_u], dtype=np.float64).reshape(na_u, 3) * BOHR_TO_ANGSTROM
-        tmpt = tmpt[8*3*na_u:]
+        if np.allclose(nsc, np.array([1, 1, 1])):
+            print(
+                f"WARN in {self.siesta_path}: The system appears to be a cluster! If you are calculating extended systems, please set `ForceAuxCell true` in your fdf file and run SIESTA again."
+            )
+        tmpt = (
+            f.read_reals()
+        )  # 0~8: lattice parameter/Bohr, 9: fermi level/au, 10: total charge, 11: electronic temperature
+        tmpt = f.read_record(
+            dtype=np.byte
+        )  # isc(nscx*nscy*nscz,3), xa(na_u,3)/Bohr in column-major, isa(na_u), lasto(na_u)
+        isc = np.frombuffer(tmpt[: 4 * 3 * nsc[0] * nsc[1] * nsc[2]], dtype=np.int32).reshape(
+            nsc[0] * nsc[1] * nsc[2], 3
+        )
+        tmpt = tmpt[4 * 3 * nsc[0] * nsc[1] * nsc[2] :]
+        xa = np.frombuffer(tmpt[: 8 * 3 * na_u], dtype=np.float64).reshape(na_u, 3) * BOHR_TO_ANGSTROM
+        tmpt = tmpt[8 * 3 * na_u :]
         tmpt = np.frombuffer(tmpt[:], dtype=np.int32)
         isa = tmpt[:na_u]
-        lasto = tmpt[na_u:2*na_u]
+        lasto = tmpt[na_u : 2 * na_u]
         tmpt = f.read_reals()
         for _ in range(nspecies):
             tmpt = f.read_ints()  # orbital infos of species
         if version > 1:
-            tmpt = f.read_record(*(['i4',]*9+['f8',]*3))  # k-point record: k_cell(3x3 int), k_displ(3 real)
+            tmpt = f.read_record(
+                *(
+                    [
+                        "i4",
+                    ]
+                    * 9
+                    + [
+                        "f8",
+                    ]
+                    * 3
+                )
+            )  # k-point record: k_cell(3x3 int), k_displ(3 real)
         numh = f.read_ints()  # numh
-        assert len(numh) == self.orbits_quantity, f"The number of rows read from HSX file ({len(numh)}) is inconsistent with the number of orbitals ({self.orbits_quantity})."
+        assert len(numh) == self.orbits_quantity, (
+            f"The number of rows read from HSX file ({len(numh)}) is inconsistent with the number of orbitals ({self.orbits_quantity})."
+        )
         numh = np.cumsum(numh)
         numh = np.append(np.array([0]), numh)
         listh = []
         for i in range(self.orbits_quantity):
             col_idx = f.read_ints()
             listh.append(col_idx)
-            assert len(col_idx) == numh[i+1] - numh[i], f"The number of column indexes does not match ({len(col_idx)} != {numh[i+1] - numh[i]})."
+            assert len(col_idx) == numh[i + 1] - numh[i], (
+                f"The number of column indexes does not match ({len(col_idx)} != {numh[i + 1] - numh[i]})."
+            )
         listh = np.concatenate(listh)
         listh -= 1  # from 1-based to 0-based
         n_listh = len(listh)
@@ -459,7 +458,7 @@ class SIESTAReader:
             item_tmpt = {}
             for iR, R in enumerate(self.orb_R_info):
                 start_col_global = iR * self.orbits_quantity
-                for (ia, jb) in self.atom_pairs[R]:
+                for ia, jb in self.atom_pairs[R]:
                     elem_a = self.elements[ia]
                     matrix_slice_i = slice(
                         self.site_norbits_cumsum[ia],
@@ -493,18 +492,10 @@ class SIESTAReader:
             for key in item_tmpts[0].keys():
                 mat_dim1, mat_dim2 = np.shape(item_tmpts[0][key])
                 item_spinful = np.zeros((2 * mat_dim1, 2 * mat_dim2), dtype=np.complex128)
-                item_spinful[:mat_dim1, :mat_dim2] = (
-                    item_tmpts[0][key] + 1j * item_tmpts[4][key]
-                )
-                item_spinful[mat_dim1:, :mat_dim2] = (
-                    item_tmpts[6][key] + 1j * item_tmpts[7][key]
-                )
-                item_spinful[:mat_dim1, mat_dim2:] = (
-                    item_tmpts[2][key] - 1j * item_tmpts[3][key]
-                )
-                item_spinful[mat_dim1:, mat_dim2:] = (
-                    item_tmpts[1][key] + 1j * item_tmpts[5][key]
-                )
+                item_spinful[:mat_dim1, :mat_dim2] = item_tmpts[0][key] + 1j * item_tmpts[4][key]
+                item_spinful[mat_dim1:, :mat_dim2] = item_tmpts[6][key] + 1j * item_tmpts[7][key]
+                item_spinful[:mat_dim1, mat_dim2:] = item_tmpts[2][key] - 1j * item_tmpts[3][key]
+                item_spinful[mat_dim1:, mat_dim2:] = item_tmpts[1][key] + 1j * item_tmpts[5][key]
                 item_out[key] = item_spinful
         else:
             item_out = item_tmpts[0]
@@ -519,8 +510,7 @@ class SIESTAReader:
             "spinful": self.spinful,
             "fermi_energy_eV": self.fermi_energy,
             "elements_orbital_map": {
-                PERIODIC_TABLE_INDEX_TO_SYMBOL[k]: sorted(v)
-                for k, v in self.elem_orb_map.items()
+                PERIODIC_TABLE_INDEX_TO_SYMBOL[k]: sorted(v) for k, v in self.elem_orb_map.items()
             },
         }
         with open(file_path, "w") as fwj:
@@ -535,14 +525,9 @@ class SIESTAReader:
             "  " + " ".join(map(str, self.lattice[1])) + "\n",
             "  " + " ".join(map(str, self.lattice[2])) + "\n",
             " ".join(self.atom_elem_order_dict.keys()) + "\n",
-            " "
-            + " ".join(map(lambda v: str(len(v)), self.atom_elem_order_dict.values()))
-            + "\n",
+            " " + " ".join(map(lambda v: str(len(v)), self.atom_elem_order_dict.values())) + "\n",
             "Cartesian\n",
-        ] + [
-            "  " + " ".join(map(str, self.cart_coords[i])) + "\n"
-            for i in self.cart_coords_ordered
-        ]
+        ] + ["  " + " ".join(map(str, self.cart_coords[i])) + "\n" for i in self.cart_coords_ordered]
         with open(file_path, "w") as fwp:
             fwp.writelines(poscar)
 
@@ -553,14 +538,15 @@ class SIESTAReader:
         data = {
             "atom_pairs": self.matrix_info["atom_pairs"],
             "chunk_shapes": self.matrix_info["chunk_shapes"] * (spinful + 1),
-            "chunk_boundaries": self.matrix_info["chunk_boundaries"]
-            * ((spinful + 1) ** 2),
+            "chunk_boundaries": self.matrix_info["chunk_boundaries"] * ((spinful + 1) ** 2),
         }
         ks = np.array(list(value.keys()), dtype=int)
-        if np.allclose(ks, data['atom_pairs']):
+        if np.allclose(ks, data["atom_pairs"]):
             entries = [v.reshape(-1) for k, v in value.items()]
         else:
-            print(f"WARN in {self.siesta_path}: The order of atom_pairs in {item} are not consistent with the ones in matrix_info. The atom_pairs will be reordered, which may take a long time ...")
+            print(
+                f"WARN in {self.siesta_path}: The order of atom_pairs in {item} are not consistent with the ones in matrix_info. The atom_pairs will be reordered, which may take a long time ..."
+            )
             entries = [None] * len(data["atom_pairs"])
             atom_pairs_order = data["atom_pairs"].tolist()
             for k, v in value.items():

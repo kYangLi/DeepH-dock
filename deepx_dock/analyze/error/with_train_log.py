@@ -1,9 +1,7 @@
 from pathlib import Path
 import re
-from tqdm import tqdm
 
-from joblib import Parallel, delayed
-
+from deepx_dock.parallel import parallel_map
 from deepx_dock.analyze.error.with_infer_res import ErrorElementsDistributionAnalyzer
 from deepx_dock.analyze.error.with_infer_res import ErrorStructureDistributionAnalyzer
 from deepx_dock.misc import load_json_file
@@ -14,13 +12,13 @@ MASK_THRESHOLD = 1E-10
 
 class ErrorElementsDistAnalyzerWithLog(ErrorElementsDistributionAnalyzer):
     def __init__(self,
-        log_file_path, dft_dir, cache_res=False, parallel_num=1, 
+        log_file_path, dft_dir, cache_res=False, n_jobs=1, 
     ):
         self.log_file_path = Path(log_file_path)
         self.dft_dir = dft_dir
         self.root_dir = self.log_file_path.parent
         self.cache_res = cache_res
-        self.parallel_num = parallel_num
+        self.n_jobs = n_jobs
         #
         self.save_figure_path = self.root_dir / f'{self.TAG}.png'
         self.cached_result_path =  self.root_dir / f'{self.TAG}.json'
@@ -38,9 +36,11 @@ class ErrorElementsDistAnalyzerWithLog(ErrorElementsDistributionAnalyzer):
     
     def _get_all_results(self):
         result_dict = self._collect_res_from_logfile()
-        results = Parallel(n_jobs=self.parallel_num)(
-            delayed(self._get_one_result)(sid, error, self.dft_dir)
-            for sid, error in tqdm(result_dict.items(), desc="Error Analysis")
+        results = parallel_map(
+            lambda args: self._get_one_result(args[0], args[1], self.dft_dir),
+            result_dict.items(),
+            n_jobs=self.n_jobs,
+            desc="Error Analysis"
         )
         return results
     

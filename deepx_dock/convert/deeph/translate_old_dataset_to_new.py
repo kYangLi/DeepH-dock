@@ -3,13 +3,11 @@ import shutil
 import json
 import numpy as np
 import h5py
-from tqdm import tqdm
 
 from functools import partial
-from joblib import Parallel, delayed
-
 from collections import Counter
 
+from deepx_dock.parallel import parallel_map
 from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME, DEEPX_INFO_FILENAME
 from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
@@ -90,10 +88,7 @@ class NewDatasetTranslator:
         data_dir_lister = get_data_dir_lister(
             self.old_data_dir, self.n_tier, validation_check_deeph
         )
-        Parallel(n_jobs=self.n_jobs)(
-            delayed(worker)(dir_name)
-            for dir_name in tqdm(data_dir_lister, desc="Data")
-        )
+        parallel_map(worker, data_dir_lister, n_jobs=self.n_jobs, desc="Data")
 
     @staticmethod
     def transfer_one_old_to_new(
@@ -347,10 +342,7 @@ class OldDatasetTranslator:
         data_dir_lister = get_data_dir_lister(
             self.new_data_dir, self.n_tier, validation_check_deepx
         )
-        Parallel(n_jobs=self.n_jobs)(
-            delayed(worker)(dir_name)
-            for dir_name in tqdm(data_dir_lister, desc="Data")
-        )
+        parallel_map(worker, data_dir_lister, n_jobs=self.n_jobs, desc="Data")
 
     @staticmethod
     def transfer_one_new_to_old(

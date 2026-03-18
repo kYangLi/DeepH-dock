@@ -4,6 +4,10 @@ from datetime import datetime
 EXTREMELY_LARGE_FLOAT = 1.23456789e10
 EXTREMELY_SMALL_FLOAT = 1.0E-16
 
+# Physics
+HARTREE_TO_EV = 27.2113845
+BOHR_TO_ANGSTROM = 0.529177249
+
 # Time stamp
 TIME_STAMP = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 

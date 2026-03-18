@@ -1,10 +1,8 @@
 from pathlib import Path
 import numpy as np
-from tqdm import tqdm
 import h5py
 
 from functools import partial
-from joblib import Parallel, delayed
 
 from scipy.sparse import csr_matrix
 
@@ -13,6 +11,7 @@ try:
 except Exception as e:
     print("[error] The petsc4py is not well installed.")
 
+from deepx_dock.parallel import parallel_map
 from deepx_dock.misc import load_json_file, dump_toml_file
 from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME, DEEPX_INFO_FILENAME
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
@@ -34,9 +33,7 @@ def validation_check_deeph(root_dir: Path, prev_dirname: Path):
 
 
 class DeepHtoPETScTranslator:
-    def __init__(
-        self, deeph_dir, petsc_dir, export_S=True, export_H=True, n_jobs=1, n_tier=1
-    ):
+    def __init__(self, deeph_dir, petsc_dir, export_S=True, export_H=True, n_jobs=1, n_tier=1):
         self.deeph_dir = Path(deeph_dir)
         self.petsc_dir = Path(petsc_dir)
         self.export_S = export_S
@@ -54,17 +51,11 @@ class DeepHtoPETScTranslator:
             export_S=self.export_S,
             export_H=self.export_H,
         )
-        data_dir_lister = get_data_dir_lister(
-            self.deeph_dir, self.n_tier, validation_check_deeph
-        )
-        Parallel(n_jobs=self.n_jobs)(
-            delayed(worker)(dir_name) for dir_name in tqdm(data_dir_lister, desc="Data")
-        )
+        data_dir_lister = get_data_dir_lister(self.deeph_dir, self.n_tier, validation_check_deeph)
+        parallel_map(worker, data_dir_lister, n_jobs=self.n_jobs, desc="Data")
 
     @staticmethod
-    def transfer_one_deeph_to_petsc(
-        dir_name: str, deeph_path: Path, petsc_path: Path, export_S=True, export_H=True
-    ):
+    def transfer_one_deeph_to_petsc(dir_name: str, deeph_path: Path, petsc_path: Path, export_S=True, export_H=True):
         try:
             deeh_dir_path = deeph_path / dir_name
             if not deeh_dir_path.is_dir():
@@ -112,9 +103,7 @@ class PETScWriter:
             f"in {poscar_path}, the second line must be positive, but got {scale}."
         )
         # Lattice vector
-        self.lattice = np.array(
-            [line.split()[:3] for line in lines[2:5]], dtype=np.float64
-        )
+        self.lattice = np.array([line.split()[:3] for line in lines[2:5]], dtype=np.float64)
         self.lattice = np.array([vec * s for vec, s in zip(self.lattice, scale)])
         # Element symbols and number of atoms
         self.elem_symbols_unique = lines[5].split()
@@ -124,11 +113,7 @@ class PETScWriter:
         )
         self.atom_num = sum(self.elem_counts)
         # Cartesian or Direct coordinates
-        coords_mode = (
-            "Cartesian"
-            if (lines[7][0].lower() == "c" or lines[7][0].lower() == "k")
-            else "Direct"
-        )
+        coords_mode = "Cartesian" if (lines[7][0].lower() == "c" or lines[7][0].lower() == "k") else "Direct"
         # Coordinates
         assert len(lines) >= 8 + self.atom_num, (
             f"in {poscar_path}, the number of lines must be at least 8 + {self.atom_num}, but got {len(lines)}."
@@ -151,15 +136,12 @@ class PETScWriter:
         self.elements_orbital_dict = info["elements_orbital_map"]
         element_orbital_counts = np.array(
             [
-                sum(self.elements_orbital_dict[element]) * 2
-                + len(self.elements_orbital_dict[element])
+                sum(self.elements_orbital_dict[element]) * 2 + len(self.elements_orbital_dict[element])
                 for element in self.elem_symbols_unique
             ]
         )
         self.atom_orbital_counts = np.repeat(element_orbital_counts, self.elem_counts)
-        self.atom_orbital_cumsum = np.concatenate(
-            (np.array([0]), np.cumsum(self.atom_orbital_counts))
-        )
+        self.atom_orbital_cumsum = np.concatenate((np.array([0]), np.cumsum(self.atom_orbital_counts)))
 
     def _read_matrix(self, item, filename: str):
         file_path = self.deeph_path / filename
@@ -169,9 +151,9 @@ class PETScWriter:
             chunk_shapes = np.array(f["chunk_shapes"][:], dtype=np.int64)
             entries = np.array(f["entries"][:])
         value = {
-            tuple(map(int, atom_pairs[i, :])): entries[
-                chunk_boundaries[i] : chunk_boundaries[i + 1]
-            ].reshape(chunk_shapes[i])
+            tuple(map(int, atom_pairs[i, :])): entries[chunk_boundaries[i] : chunk_boundaries[i + 1]].reshape(
+                chunk_shapes[i]
+            )
             for i in range(atom_pairs.shape[0])
         }
         setattr(self, item, value)
@@ -226,9 +208,7 @@ class PETScWriter:
 
                 if consider_spin:
                     # uu
-                    mask_uu = (local_rows < self.atom_orbital_counts[ia]) & (
-                        local_cols < self.atom_orbital_counts[ja]
-                    )
+                    mask_uu = (local_rows < self.atom_orbital_counts[ia]) & (local_cols < self.atom_orbital_counts[ja])
                     r_local = local_rows[mask_uu]
                     c_local = local_cols[mask_uu]
                     flat_indices = r_local * block_cols + c_local
@@ -237,9 +217,7 @@ class PETScWriter:
                     data[R].extend(non_zero_values[mask_uu])
 
                     # ud
-                    mask_ud = (local_rows < self.atom_orbital_counts[ia]) & (
-                        local_cols >= self.atom_orbital_counts[ja]
-                    )
+                    mask_ud = (local_rows < self.atom_orbital_counts[ia]) & (local_cols >= self.atom_orbital_counts[ja])
                     r_local = local_rows[mask_ud]
                     c_local = local_cols[mask_ud] - block_cols
                     flat_indices = r_local * block_cols + c_local
@@ -248,9 +226,7 @@ class PETScWriter:
                     data[R].extend(non_zero_values[mask_ud])
 
                     # du
-                    mask_du = (local_rows >= self.atom_orbital_counts[ia]) & (
-                        local_cols < self.atom_orbital_counts[ja]
-                    )
+                    mask_du = (local_rows >= self.atom_orbital_counts[ia]) & (local_cols < self.atom_orbital_counts[ja])
                     r_local = local_rows[mask_du] - block_rows
                     c_local = local_cols[mask_du]
                     flat_indices = r_local * block_cols + c_local
@@ -315,9 +291,7 @@ class PETScWriter:
         orbits_type_out = "{ "
         for element, count in zip(self.elem_symbols_unique, self.elem_counts):
             orbits_type = self.elements_orbital_dict[element]
-            elem_orbitals_type = (
-                "{ " + " ".join(map(lambda s: str(s) + ",", orbits_type)) + " }, "
-            )
+            elem_orbitals_type = "{ " + " ".join(map(lambda s: str(s) + ",", orbits_type)) + " }, "
             orbits_type_out += elem_orbitals_type * count
         orbits_type_out += "}"
 
@@ -343,10 +317,7 @@ class PETScWriter:
             " ".join(self.elem_symbols_unique) + "\n",
             " " + " ".join(map(str, self.elem_counts)) + "\n",
             "Direct\n",
-        ] + [
-            "  " + " ".join(map(str, direct_coords[i, :])) + "\n"
-            for i in range(self.atom_num)
-        ]
+        ] + ["  " + " ".join(map(str, direct_coords[i, :])) + "\n" for i in range(self.atom_num)]
         with open(poscar_path, "w") as f:
             f.writelines(poscar)
 

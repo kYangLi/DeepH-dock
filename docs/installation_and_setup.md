@@ -71,55 +71,140 @@ cd DeepH-dock
 uv pip install -e .[docs]
 ```
 
-## Commandline Auto-Completion
+## Shell Auto-Completion
 
-Set up intelligent tab completion to save time and reduce errors when using the `dock` command. After configuration, press <kbd>Tab</kbd> to auto-complete subcommands, options, and file paths while in the `deeph` environment.
+DeepH-dock provides intelligent tab completion for `dock` commands, enabling fast and error-free command entry. The completion system supports **Bash**, **Zsh**, and **Fish** shells.
 
-### Setup Instructions
+### Quick Setup
 
-#### Add to Shell Configuration
-
-Paste the appropriate alias into your shell's config file:
-
-- **Bash** (`~/.bashrc`):
-
-    ```bash
-    alias act-deeph='source ${HOME}/.uvenv/deeph/bin/activate ; eval "$(_DOCK_COMPLETE=bash_source dock)"'
-    ```
-
-- **Zsh** (`~/.zshrc`):
-
-    ```bash
-    alias act-deeph='source ${HOME}/.uvenv/deeph/bin/activate ; eval "$(_DOCK_COMPLETE=zsh_source dock)"'
-    ```
-
-- **Fish** (`~/.config/fish/completions/dock.fish`):
-
-    ```bash
-    alias act-deeph='source ${HOME}/.uvenv/deeph/bin/activate ; _DOCK_COMPLETE=fish_source dock | source'
-    ```
-
-Restart your terminal session to reload the shell settings.
-
-#### Activate the Completion
-
-Execute this command in your terminal:
+Run the following command to initialize shell completion:
 
 ```bash
-act-deeph
+dock completion init bash    # For Bash users
+dock completion init zsh     # For Zsh users
+dock completion init fish    # For Fish users
 ```
 
-This will:
+The command will:
+1. Generate the completion script
+2. Check if completion is already configured
+3. Ask whether to automatically add it to your shell config file (default: Y)
+4. Provide instructions for immediate activation
 
-- Activate the `deeph` Python virtual environment
-- Enable tab completion for `dock` in your current session
+### Interactive Setup (Recommended)
+
+When you run `dock completion init bash`, you'll see:
+
+```
+✅ Completion script generated successfully!
+📁 Location: /home/user/.cache/deepx/dock_completion.bash
+
+📝 Setup Options:
+
+Would you like to automatically add the completion to your shell config?
+This will add the following line to /home/user/.bashrc:
+   [ -f /home/user/.cache/deepx/dock_completion.bash ] && source ...
+
+Add to shell config? [Y/n]: 
+```
+
+- Press **Enter** (or type **Y**) to automatically add to your shell config
+- Type **n** for manual setup instructions
+
+### Automatic Mode (Skip Confirmation)
+
+To skip the confirmation prompt and automatically configure completion:
+
+```bash
+dock completion init bash --auto-setup
+```
+
+### Activate Immediately
+
+After setup, reload your shell configuration to enable completion immediately:
+
+**Bash:**
+```bash
+source ~/.bashrc
+```
+
+**Zsh:**
+```bash
+source ~/.zshrc
+```
+
+**Fish:**
+```bash
+exec fish
+```
+
+Or load completion in the current session without restarting:
+
+```bash
+source ~/.cache/deepx/dock_completion.bash  # Bash
+source ~/.cache/deepx/dock_completion.zsh   # Zsh
+```
 
 ### Using Auto-Completion
 
-1. Type `dock` followed by a space
-2. Press <kbd>Tab</kbd> to:
-   - View available subcommands/options
-   - Auto-complete partially typed arguments
-   - Suggest file paths when relevant
+Once configured, press <kbd>Tab</kbd> to auto-complete:
 
-> **Note**: Auto-completion persists only for the terminal session where `act-deeph` was executed. Re-run `act-deeph` in new sessions.
+```bash
+dock <TAB>                        # View all commands
+dock analyze <TAB>                # View analyze subcommands
+dock analyze error <TAB>          # View error subcommands
+dock analyze error entries --<TAB> # View available options
+```
+
+### Features
+
+- **Fast Performance**: < 20ms response time (vs 500ms with traditional Click completion)
+- **Smart Detection**: Automatically detects if completion is already configured
+- **Version Aware**: Automatically updates when switching virtual environments or reinstalling
+- **Multi-Shell Support**: Native support for Bash, Zsh, and Fish
+
+### Manual Setup
+
+If you prefer manual configuration or the automatic setup fails, add this line to your shell config file:
+
+**Bash** (`~/.bashrc`):
+```bash
+[ -f ~/.cache/deepx/dock_completion.bash ] && source ~/.cache/deepx/dock_completion.bash
+```
+
+**Zsh** (`~/.zshrc`):
+```bash
+[ -f ~/.cache/deepx/dock_completion.zsh ] && source ~/.cache/deepx/dock_completion.zsh
+```
+
+**Fish** (`~/.config/fish/completions/dock.fish`):
+```bash
+# Fish automatically loads completions from ~/.cache/deepx/dock_completion.fish
+```
+
+### Troubleshooting
+
+**Completion not working?**
+
+1. Verify completion is loaded:
+   ```bash
+   complete -p dock  # Bash
+   ```
+
+2. Check if script exists:
+   ```bash
+   ls ~/.cache/deepx/dock_completion.bash
+   ```
+
+3. Reload manually:
+   ```bash
+   source ~/.cache/deepx/dock_completion.bash
+   ```
+
+**Completion outdated after update?**
+
+The completion cache updates automatically when it detects version changes. You can also manually update:
+
+```bash
+dock completion update
+```

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepx-dock"
-version = "0.9.6.post2"
+version = "0.9.12"
 authors = [
     {name = "DeepH team", email = "deeph-pack@outlook.com"},
 ]
@@ -27,7 +27,6 @@ dependencies = [
     "tqdm",
     "toml",
     "scipy",
-    "joblib",
     "matplotlib",
     "mendeleev",
     "libtetrabz",
@@ -38,20 +37,34 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-petsc = [
-    "mpi4py",
-    "numpy",
-    "petsc",
-    "petsc4py",
-]
-
-pyscf = [
-    "pyscf",
-]
-
-fhiaims = [
-    "scalapack4py",
-    "asi4py",
+dev = [
+    # Testing
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-timeout>=2.0",
+    
+    # Linting & Formatting
+    "ruff>=0.1.0",
+    "black>=23.0",
+    
+    # Type checking
+    "mypy>=1.0",
+    
+    # Pre-commit hooks
+    "pre-commit>=3.0",
+    
+    # Documentation (inherit from docs)
+    "sphinx",
+    "sphinx-book-theme",
+    "sphinx-autobuild",
+    "ipykernel",
+    "myst_nb",
+    "nbstripout",
+    "recommonmark",
+    "ipython_genutils",
+    "sphinx-design",
+    "jupytext",
+    "docutils",
 ]
 
 docs = [
@@ -66,6 +79,22 @@ docs = [
     "sphinx-design",
     "jupytext",
     "docutils",
+]
+
+petsc = [
+    "mpi4py",
+    "numpy",
+    "petsc",
+    "petsc4py",
+]
+
+pyscf = [
+    "pyscf",
+]
+
+fhiaims = [
+    "scalapack4py",
+    "asi4py",
 ]
 
 [project.urls]

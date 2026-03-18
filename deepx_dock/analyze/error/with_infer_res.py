@@ -1,10 +1,7 @@
 from pathlib import Path
 import h5py
-from tqdm import tqdm
 import json
 from itertools import accumulate
-from joblib import Parallel, delayed
-
 import numpy as np
 
 import matplotlib.colors as mcolors
@@ -14,6 +11,7 @@ import matplotlib.cm as cm
 import matplotlib.patches as patches
 import mendeleev
 
+from deepx_dock.parallel import parallel_map
 from deepx_dock.misc import load_json_file, dump_json_file
 
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
@@ -178,7 +176,7 @@ class BaseAnalyzer:
         pred_dft_dir, bm_dft_dir="", target_name="H",
         standardize_gauge=False, consider_overlap_mask=False,
         data_split_json=None, data_split_tags="train,validate,test",
-        cache_res=False, parallel_num=1, tier_num=0,
+        cache_res=False, n_jobs=1, n_tier=0,
     ):
         self.pred_dft_dir = Path(pred_dft_dir)
         self.bm_dft_dir = Path(bm_dft_dir) if bm_dft_dir else self.pred_dft_dir
@@ -191,8 +189,8 @@ class BaseAnalyzer:
         self.cache_res = cache_res
         self.save_figure_path = self.root_dir / f'{self.TAG}.png'
         self.cached_result_path = self.root_dir / f'{self.TAG}.h5'
-        self.parallel_num = parallel_num
-        self.tier_num = tier_num
+        self.n_jobs = n_jobs
+        self.n_tier = n_tier
 
     def analyze_all(self):
         if self.cached_result_path.is_file():
@@ -213,9 +211,11 @@ class BaseAnalyzer:
         raise NotImplementedError("Not implemented!")
     
     def _analyze_all_from_rawdata(self):
-        results = Parallel(n_jobs=self.parallel_num)(
-            delayed(self._analysis_one_structure)(str(sid), self.target_name)
-            for sid in tqdm(self._get_all_dft_dir(), desc="Error Analysis")
+        results = parallel_map(
+            lambda sid: self._analysis_one_structure(str(sid), self.target_name),
+            self._get_all_dft_dir(),
+            n_jobs=self.n_jobs,
+            desc="Error Analysis"
         )
         self._postprocess_results(results)
     
@@ -227,7 +227,7 @@ class BaseAnalyzer:
                 all_dft_dir += data_split[tag]
         else:
             all_dft_dir = get_data_dir_lister(
-                self.pred_dft_dir, self.tier_num, _validation_check
+                self.pred_dft_dir, self.n_tier, _validation_check
             )
         return all_dft_dir
     
@@ -245,12 +245,12 @@ class ErrorEachEntriesDistributionAnalyzer(BaseAnalyzer):
         pred_dft_dir, bm_dft_dir="", target_name="H", 
         standardize_gauge=False, consider_overlap_mask=False,
         data_split_json=None, data_split_tags="train,validate,test",
-        cache_res=False, parallel_num=1, tier_num=0,
+        cache_res=False, n_jobs=1, n_tier=0,
     ):
         super().__init__(
             pred_dft_dir, bm_dft_dir, target_name,
             standardize_gauge, consider_overlap_mask,
-            data_split_json, data_split_tags, cache_res, parallel_num, tier_num
+            data_split_json, data_split_tags, cache_res, n_jobs, n_tier
         )
         # Middle and output Data
         self.all_entries = []
@@ -447,13 +447,13 @@ class ErrorOrbitalResoluteDistributionAnalyzer(BaseAnalyzer):
         pred_dft_dir, bm_dft_dir=None, target_name="H", 
         standardize_gauge=False, consider_overlap_mask=False,
         data_split_json=None, data_split_tags="train,validate,test",
-        cache_res=False, pred_only=False, onsite_only=False, parallel_num=1,
-        tier_num=0,
+        cache_res=False, pred_only=False, onsite_only=False, n_jobs=1,
+        n_tier=0,
     ):
         super().__init__(
             pred_dft_dir, bm_dft_dir, target_name,
             standardize_gauge, consider_overlap_mask,
-            data_split_json, data_split_tags, cache_res, parallel_num, tier_num
+            data_split_json, data_split_tags, cache_res, n_jobs, n_tier
         )
         self.pred_only = pred_only
         self.onsite_only = onsite_only
@@ -648,13 +648,13 @@ class ErrorElementsPairDistributionAnalyzer(BaseAnalyzer):
         pred_dft_dir, bm_dft_dir=None, target_name="H", 
         standardize_gauge=False, consider_overlap_mask=False,
         data_split_json=None, data_split_tags="train,validate,test",
-        cache_res=False, pred_only=False, onsite_only=False, parallel_num=1,
-        tier_num=0,
+        cache_res=False, pred_only=False, onsite_only=False, n_jobs=1,
+        n_tier=0,
     ):
         super().__init__(
             pred_dft_dir, bm_dft_dir, target_name,
             standardize_gauge, consider_overlap_mask,
-            data_split_json, data_split_tags, cache_res, parallel_num, tier_num
+            data_split_json, data_split_tags, cache_res, n_jobs, n_tier
         )
         self.pred_only = pred_only
         self.onsite_only = onsite_only
@@ -819,12 +819,12 @@ class ErrorElementsDistributionAnalyzer(BaseAnalyzer):
         pred_dft_dir, bm_dft_dir=None, target_name="H", 
         standardize_gauge=False, consider_overlap_mask=False,
         data_split_json=None, data_split_tags="train,validate,test",
-        cache_res=False, parallel_num=1, tier_num=0,
+        cache_res=False, n_jobs=1, n_tier=0,
     ):
         super().__init__(
             pred_dft_dir, bm_dft_dir, target_name,
             standardize_gauge, consider_overlap_mask,
-            data_split_json, data_split_tags, cache_res, parallel_num, tier_num
+            data_split_json, data_split_tags, cache_res, n_jobs, n_tier
         )
         self.cached_result_path = self.root_dir / f'{self.TAG}.json'
         # Result
@@ -978,12 +978,12 @@ class ErrorStructureDistributionAnalyzer(BaseAnalyzer):
         pred_dft_dir, bm_dft_dir=None, target_name="H", 
         standardize_gauge=False, consider_overlap_mask=False,
         data_split_json=None, data_split_tags="train,validate,test",
-        cache_res=False, parallel_num=1, tier_num=0,
+        cache_res=False, n_jobs=1, n_tier=0,
     ):
         super().__init__(
             pred_dft_dir, bm_dft_dir, target_name,
             standardize_gauge, consider_overlap_mask,
-            data_split_json, data_split_tags, cache_res, parallel_num, tier_num
+            data_split_json, data_split_tags, cache_res, n_jobs, n_tier
         )
         self.cached_result_path = self.root_dir / f'{self.TAG}.json'
         # Result

@@ -35,6 +35,7 @@ For the latest version-specific documentation of DeepH-pack, please refer to the
 - [Quick Start](#quick-start)
   - [Installation](#installation)
   - [Basic Usage](#basic-usage)
+  - [Shell Auto-Completion](#shell-auto-completion)
 - [Citation](#citation)
 - [Application Scenarios](#application-scenarios)
 - [Contributing](#contributing)
@@ -50,18 +51,20 @@ For the latest version-specific documentation of DeepH-pack, please refer to the
 
 - **Standardized Workflows:** Streamlines the full research lifecycle with automated pipelines for DFT data generation, preprocessing, post-analysis, and custom composite workflows.
 
-- **Utility Toolkit:** Empowers developers with a robust set of tools for multi-level parallel computing (MPI/Loky), versatile format conversion, and rigorous data integrity validation.
+- **Utility Toolkit:** Empowers developers with a robust set of tools for multi-level parallel computing (MPI/threads), versatile format conversion, and rigorous data integrity validation.
 
 ## Quick Start
 
 ### Installation
 
 Publish version:
+
 ```bash
 pip install deepx-dock
 ```
 
 Development version:
+
 ```bash
 pip install git+https://github.com/kYangLi/DeepH-dock
 ```
@@ -73,19 +76,39 @@ run `dock -h`,
 ```bash
 Usage: dock [OPTIONS] COMMAND [ARGS]...
 
-  DeepH-dock: Materials Computation and Data Analysis Toolkit.
+  DeepH-dock: Materials computation and data analysis toolkit.
 
 Options:
-  --version   Show the version and exit.
-  -h, --help  Show this message and exit.
+  -v, --version  Show the version and exit.
+  -h, --help     Show this message and exit.
 
 Commands:
   analyze
   compute
   convert
   design
-  ls       List all available commands.
+  ls          List all available commands.
+  completion  Shell completion management commands.
 ```
+
+### Shell Auto-Completion
+
+DeepH-dock provides intelligent tab completion for `dock` commands. Enable it for your shell:
+
+```bash
+# Bash
+dock completion init bash
+
+# Zsh
+dock completion init zsh
+
+# Fish
+dock completion init fish
+```
+
+After setup, reload your shell or run `source ~/.bashrc` (or `~/.zshrc` for Zsh). Press <kbd>Tab</kbd> to auto-complete commands and options.
+
+For detailed setup instructions, see [Installation & Setup](https://docs.deeph-pack.com/deeph-dock/en/latest/installation_and_setup.html#shell-auto-completion).
 
 ## Citation
 
@@ -152,15 +175,15 @@ from deepx_dock._cli.registry import register
         click.argument('fhiaims_dir', type=click.Path()),
         click.argument('deeph_dir', type=click.Path()),
         click.option(
-            '--parallel-num', '-p', type=int, default=-1,
-            help="The parallel processing number, -1 for using all of the cores."
+            '--jobs-num', '-j', type=int, default=-1,
+            help='Number of parallel workers (-1 for all cores)'
         ),
     ],
 )
-def my_func(fhiaims_dir: Path, deeph_dir: Path, parallel_num: int):
+def my_func(fhiaims_dir: Path, deeph_dir: Path, jobs_num: int):
     # Your implementation logic here
-    from .my_wanderful_function import my_real_func
-    my_real_func(fhiaims_dir, deeph_dir, parallel_num)
+    from .my_wonderful_function import my_real_func
+    my_real_func(fhiaims_dir, deeph_dir, n_jobs=jobs_num)
 ```
 
 Then, on the user end, a new command will be available:

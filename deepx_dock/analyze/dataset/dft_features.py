@@ -3,13 +3,11 @@ from typing import Dict, List, Any
 from tqdm import tqdm
 from pathlib import Path
 from dataclasses import dataclass, asdict
-
-import warnings
 from functools import partial
-from joblib import Parallel, delayed
 
 import numpy as np
 
+from deepx_dock.parallel import parallel_map
 from deepx_dock.CONSTANT import PERIODIC_TABLE_INDEX_TO_SYMBOL
 from deepx_dock.CONSTANT import PERIODIC_TABLE_SYMBOL_TO_INDEX
 from deepx_dock.CONSTANT import DEEPX_INFO_FILENAME
@@ -122,15 +120,15 @@ class DFTDatasetFeatures:
 class DFTDatasetFeaturesDetective:
     def __init__(self, 
         dft_path: str | Path, planned_common_orbital_types: List | None = None,
-        data_dir_depth: int = 0, parallel_num: int = -1, 
+        n_tier: int = 0, n_jobs: int = -1, 
     ):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.root_path = Path(dft_path)
         self.planned_common_orbital_types = planned_common_orbital_types
-        self.data_dir_depth = data_dir_depth
-        self.parallel_num = parallel_num
+        self.n_tier = n_tier
+        self.n_jobs = n_jobs
         #
-        self.feature_file = self.root_path / DATASET_FEATURES_FILENAME
+        self.feature_file = self.root_path.parent / DATASET_FEATURES_FILENAME
         self._features = DFTDatasetFeatures()
 
     @property
@@ -186,7 +184,7 @@ class DFTDatasetFeaturesDetective:
     def _find_all_dft_data_dir(self):
         print("[do] Locate all DFT data directories ...", flush=True)
         self.logger.info(f"[rawdata] Processing DFT data in `{self.root_path}`.")
-        lister = get_data_dir_lister(self.root_path, self.data_dir_depth)
+        lister = get_data_dir_lister(self.root_path, self.n_tier)
         all_dft_dir_list = [str(d) for d in tqdm(lister, desc="  +-[search]")]
         #
         structures_num = len(all_dft_dir_list)
@@ -201,18 +199,14 @@ class DFTDatasetFeaturesDetective:
     def _get_info_from_whole_dft_raw_data(self):
         print("[do] Parsing DFT data features ...", flush=True)
         self.logger.info(
-            f"[rawdata] Parsing elements of materials one by one with {self.parallel_num} processes..."
+            f"[rawdata] Parsing elements of materials one by one with {self.n_jobs} processes..."
         )
         # Get the unsorted element-orbital map
         worker = partial(
             self._try_expand_one_dft_data_features,
             root_path=self.root_path,
         )
-        warnings.filterwarnings("ignore", message=r"os\.fork\(\) was called.")
-        results = Parallel(n_jobs=self.parallel_num)(
-            delayed(worker)(d)
-            for d in tqdm(self._features.all_dft_dirname, desc="  +-[parse]")
-        )
+        results = parallel_map(worker, self._features.all_dft_dirname, n_jobs=self.n_jobs, desc="  +-[parse]")
         self._summarize_info(results)
     
     def _summarize_info(self, results):

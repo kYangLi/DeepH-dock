@@ -72,23 +72,29 @@ from deepx_dock._cli.registry import register
         click.argument('input_dir', type=click.Path(exists=True)),
         click.argument('output_dir', type=click.Path()),
         click.option(
+            '--jobs-num', '-j',
+            type=int,
+            default=-1,
+            help='Number of parallel workers (-1 for all cores)'
+        ),
+        click.option(
             '--precision', default='double', 
             help='Numerical precision (single/double).'
         ),
     ],
 )
-def my_converter(input_dir: Path, output_dir: Path, precision: str):
+def my_converter(input_dir: Path, output_dir: Path, jobs_num: int, precision: str):
     """
     Core implementation function.
   
     This function is called when the command is executed.
     It should contain or import the actual conversion logic.
     """
-    # Import your implementation (avances importing for faster CLI load)
+    # Import your implementation (lazy importing for faster CLI load)
     from .core_parser import convert_to_deeph_format
   
-    # Call the actual implementation
-    convert_to_deeph_format(input_dir, output_dir, precision)
+    # Call the actual implementation (pass as n_jobs to class)
+    convert_to_deeph_format(input_dir, output_dir, n_jobs=jobs_num, precision=precision)
 ```
 
 ### Command Availability
@@ -101,6 +107,9 @@ dock convert my-dft-code export <input_dir> <output_dir>
 
 # With options
 dock convert my-dft-code export <input_dir> <output_dir> --precision single
+
+# With parallel processing
+dock convert my-dft-code export <input_dir> <output_dir> -j 4
 ```
 
 ### Key Components Explained
@@ -151,6 +160,17 @@ cli_args=[
 4. **Error Handling**: Include appropriate error messages and exit codes for common failure scenarios.
 
 5. **Testing**: Test your CLI command with various inputs to ensure it behaves correctly.
+
+6. **Follow Parameter Naming Conventions**: DeepH-dock uses a consistent naming convention for parallel processing parameters:
+
+   | Position | Name Pattern | Example |
+   |----------|--------------|---------|
+   | CLI option | `--jobs-num`, `--tier-num` | `-j 4 -t 0` |
+   | CLI function parameter | `jobs_num`, `tier_num` | `def cmd(..., jobs_num: int)` |
+   | Class `__init__` parameter | `n_jobs`, `n_tier` | `def __init__(self, ..., n_jobs=-1)` |
+   | Passing to class | `n_jobs=jobs_num` | `Class(..., n_jobs=jobs_num)` |
+
+   This ensures consistency across the codebase and follows industry standards (`-j` like `make -j`).
 
 By following this registration pattern, your module will seamlessly integrate with the DeepH-dock command-line ecosystem, making it easily discoverable and usable by other researchers.
 

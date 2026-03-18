@@ -30,7 +30,7 @@ from deepx_dock._cli.registry import register
             help="Export position_matrix.h5"
         ),
         click.option(
-            '--parallel-num', '-p', type=int, default=-1,
+            "--jobs-num", "-j", type=int, default=-1,
             help="The parallel processing number, -1 for using all of the cores."
         ),
         click.option(
@@ -45,7 +45,7 @@ from deepx_dock._cli.registry import register
 def translate_openmx_to_deeph(
     openmx_dir: Path, deeph_dir: Path,
     ignore_s: bool, ignore_h: bool, export_rho: bool, export_r: bool,
-    parallel_num: int, tier_num: int, force: bool,
+    jobs_num: int, tier_num: int, force: bool,
 ):
     openmx_dir = Path(openmx_dir)
     deeph_dir = Path(deeph_dir)
@@ -67,7 +67,7 @@ def translate_openmx_to_deeph(
         export_H=not ignore_h,
         export_rho=export_rho,
         export_r=export_r,
-        n_jobs=parallel_num,
+        n_jobs=jobs_num,
         n_tier=tier_num,
     )
     translator.transfer_all_openmx_to_deeph()

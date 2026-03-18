@@ -10,7 +10,7 @@ COMMON_OPT = [
         type=click.Path(exists=True, file_okay=False, readable=True),
     ),
     click.option(
-        '--parallel-num', '-p', type=int, default=-1,
+        "--jobs-num", "-j", type=int, default=-1,
         help='The parallel processing number, -1 for using all of the cores.'
     ),
     click.option(
@@ -37,7 +37,7 @@ COMMON_OPT = [
 )
 def analyze_dataset_features(
     data_path: str | Path,
-    parallel_num: int,
+    jobs_num: int,
     tier_num: int,
     common_orbital_types: str,
     consider_parity: bool,
@@ -45,7 +45,7 @@ def analyze_dataset_features(
     from deepx_dock.analyze.dataset.analyze_dataset import DatasetAnalyzer
     inspector = DatasetAnalyzer(
         data_path=Path(data_path).resolve(),
-        n_jobs=parallel_num,
+        n_jobs=jobs_num,
         n_tier=tier_num,
     )
     inspector.analysis_dft_features(
@@ -72,7 +72,7 @@ def analyze_dataset_features(
 )
 def analyze_dataset_edge(
     data_path: str | Path,
-    parallel_num: int,
+    jobs_num: int,
     tier_num: int,
     edge_bins: Optional[int],
     plot_dpi: int,
@@ -80,7 +80,7 @@ def analyze_dataset_edge(
     from deepx_dock.analyze.dataset.analyze_dataset import DatasetAnalyzer
     inspector = DatasetAnalyzer(
         data_path=Path(data_path).resolve(),
-        n_jobs=parallel_num,
+        n_jobs=jobs_num,
         n_tier=tier_num,
     )
     inspector.statistic_edge_quantity(bins=edge_bins)
@@ -108,7 +108,7 @@ def analyze_dataset_edge(
 )
 def analyze_dataset_split(
     data_path: str,
-    parallel_num: int,
+    jobs_num: int,
     tier_num: int,
     split_ratio: Tuple[float, float, float],
     split_max_edge_num: int,
@@ -117,7 +117,7 @@ def analyze_dataset_split(
     from deepx_dock.analyze.dataset.analyze_dataset import DatasetAnalyzer
     inspector = DatasetAnalyzer(
         data_path=Path(data_path).resolve(),
-        n_jobs=parallel_num,
+        n_jobs=jobs_num,
         n_tier=tier_num,
     )
     inspector.generate_data_split_json(

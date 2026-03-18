@@ -20,12 +20,12 @@ class DensityMatrixObj(AOMatrixObj):
 
 class DensityMatrixGenerator(FermiEnergyAndDOSGenerator):
     
-    def calc_dm_K(self, method='smearing', sigma=0.02, k_process_num=1):
+    def calc_dm_K(self, method='smearing', sigma=0.02, n_jobs=1):
         if self.fermi_energy is None:
             raise ValueError("Fermi energy not determined. Run find_fermi_energy first.")
 
         if self.eigvals is None:
-            self._calc_eigvals_on_mesh(dk=0.02, k_process_num=k_process_num)
+            self._calc_eigvals_on_mesh(dk=0.02, n_jobs=n_jobs)
 
         # 1. Calculate occupation weights w_{nk}
         # eigvals: [nband, nktot]
@@ -66,11 +66,11 @@ class DensityMatrixGenerator(FermiEnergyAndDOSGenerator):
         # We need full diagonalization here to get eigenvectors
         # Use obj_H.diag. Note: We need to use the SAME k-mesh as used for eigenvalues
         # ks: [nktot, 3] from self.ks
-        print(f"Calculating eigenvectors for Density Matrix with k_process_num={k_process_num} ...")
+        print(f"Calculating eigenvectors for Density Matrix with jobs_num={n_jobs} ...")
         # diag returns (eigvals, eigvecs)
         # eigvecs: [Norb, Nband, Nk]
         _, eigvecs = self.obj_H.diag(
-            self.ks, k_process_num=k_process_num,
+            self.ks, n_jobs=n_jobs,
             sparse_calc=False, bands_only=False
         )
         # Transpose eigvecs to [Nk, Nband, Norb] for easier broadcasting
@@ -85,8 +85,8 @@ class DensityMatrixGenerator(FermiEnergyAndDOSGenerator):
         
         return AOMatrixK(self.ks, MKs)
 
-    def calc_dm_R(self, method='tetrahedron', sigma=0.02, k_process_num=1):
-        dm_K = self.calc_dm_K(method=method, sigma=sigma, k_process_num=k_process_num)
+    def calc_dm_R(self, method='tetrahedron', sigma=0.02, n_jobs=1):
+        dm_K = self.calc_dm_K(method=method, sigma=sigma, n_jobs=n_jobs)
         
         Rs = self.obj_H.mat_S.Rs # Get Lattice displacements from overlap matrix
         return AOMatrixR(Rs, dm_K.k2r(Rs))

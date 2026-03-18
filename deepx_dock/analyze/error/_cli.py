@@ -32,7 +32,7 @@ COMMON_OPT = [
         '--cache-res', is_flag=True, help='Cache the analysis results.'
     ),
     click.option(
-        '--parallel-num', '-p', type=int, default=1,
+        "--jobs-num", "-j", type=int, default=1,
         help='The number of parallel processes.'
     ),
     click.option(
@@ -85,7 +85,7 @@ COMMON_OPT = [
 )
 def analyze_error_entries(
     predicted_dft_dir: str, benchmark_dft_dir: str, target: str,
-    cache_res: bool, parallel_num: int, tier_num: int, plot_dpi: int,
+    cache_res: bool, jobs_num: int, tier_num: int, plot_dpi: int,
     data_split_json: Optional[str], data_split_tags: str,
     not_standardize_gauge: bool, ignore_overlap_mask: bool,
     entries_range: Optional[Tuple[float, float]],
@@ -104,8 +104,8 @@ def analyze_error_entries(
         data_split_json=data_split_json,
         data_split_tags=data_split_tags,
         cache_res=cache_res,
-        parallel_num=parallel_num,
-        tier_num=tier_num,
+        n_jobs=jobs_num,
+        n_tier=tier_num,
     )
     #
     dist.analyze_all()
@@ -155,7 +155,7 @@ def analyze_error_entries(
 )
 def analyze_error_orbital(
     predicted_dft_dir: str, benchmark_dft_dir: str, target: str,
-    cache_res: bool, parallel_num: int, tier_num: int, plot_dpi: int,
+    cache_res: bool, jobs_num: int, tier_num: int, plot_dpi: int,
     data_split_json: Optional[str], data_split_tags: str,
     not_standardize_gauge: bool, ignore_overlap_mask: bool,
     pred_only: bool, onsite_only: bool, plot_z_range: List[float],
@@ -174,8 +174,8 @@ def analyze_error_orbital(
         cache_res=cache_res,
         pred_only=pred_only,
         onsite_only=onsite_only,
-        parallel_num=parallel_num,
-        tier_num=tier_num,
+        n_jobs=jobs_num,
+        n_tier=tier_num,
     )
     #
     dist.analyze_all()
@@ -207,7 +207,7 @@ def analyze_error_orbital(
 )
 def analyze_error_element(
     predicted_dft_dir: str, benchmark_dft_dir: str, target: str,
-    cache_res: bool, parallel_num: int, tier_num: int, plot_dpi: int,
+    cache_res: bool, jobs_num: int, tier_num: int, plot_dpi: int,
     data_split_json: Optional[str], data_split_tags: str,
     not_standardize_gauge: bool, ignore_overlap_mask: bool,
     plot_elem_range: Tuple[float, float],
@@ -223,8 +223,8 @@ def analyze_error_element(
         data_split_json=data_split_json,
         data_split_tags=data_split_tags,
         cache_res=cache_res,
-        parallel_num=parallel_num,
-        tier_num=tier_num,
+        n_jobs=jobs_num,
+        n_tier=tier_num,
     )
     #
     dist.analyze_all()
@@ -266,7 +266,7 @@ def analyze_error_element(
             '--cache-res', is_flag=True, help='Cache the analysis results.'
         ),
         click.option(
-            '--parallel-num', '-p', type=int, default=1,
+            "--jobs-num", "-j", type=int, default=1,
             help='The number of parallel processes.'
         ),
         click.option(
@@ -285,7 +285,7 @@ def analyze_error_element_logfile(
     dft_dir: str,
     target: str,
     cache_res: bool,
-    parallel_num: int,
+    jobs_num: int,
     plot_dpi: int,
     plot_elem_range: Tuple[float, float],
 ):
@@ -295,7 +295,7 @@ def analyze_error_element_logfile(
         log_file_path=log_file_path,
         dft_dir=dft_dir if dft_dir else None,
         cache_res=cache_res,
-        parallel_num=parallel_num,
+        n_jobs=jobs_num,
     )
     #
     dist.analyze_all()
@@ -336,7 +336,7 @@ def analyze_error_element_logfile(
 )
 def analyze_error_element_pair(
     predicted_dft_dir: str, benchmark_dft_dir: str, target: str,
-    cache_res: bool, parallel_num: int, tier_num: int,
+    cache_res: bool, jobs_num: int, tier_num: int,
     plot_dpi: int, data_split_json: Optional[str], data_split_tags: str,
     not_standardize_gauge: bool, ignore_overlap_mask: bool,
     pred_only: bool, onsite_only: bool, plot_z_range: List[float],
@@ -355,8 +355,8 @@ def analyze_error_element_pair(
         cache_res=cache_res,
         pred_only=pred_only,
         onsite_only=onsite_only,
-        parallel_num=parallel_num,
-        tier_num=tier_num,
+        n_jobs=jobs_num,
+        n_tier=tier_num,
     )
     #
     dist.analyze_all()
@@ -395,7 +395,7 @@ def analyze_error_element_pair(
 )
 def analyze_error_structure(
     predicted_dft_dir: str, benchmark_dft_dir: str,
-    target: str, cache_res: bool, parallel_num: int, tier_num: int,
+    target: str, cache_res: bool, jobs_num: int, tier_num: int,
     plot_dpi: int, data_split_json: Optional[str], data_split_tags: str,
     not_standardize_gauge: bool, ignore_overlap_mask: bool,
     xlims: Optional[Tuple[float, float]], ylims: Optional[Tuple[float, float]],
@@ -411,8 +411,8 @@ def analyze_error_structure(
         data_split_json=data_split_json,
         data_split_tags=data_split_tags,
         cache_res=cache_res,
-        parallel_num=parallel_num,
-        tier_num=tier_num,
+        n_jobs=jobs_num,
+        n_tier=tier_num,
     )
     #
     dist.analyze_all()

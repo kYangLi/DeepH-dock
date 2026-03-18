@@ -1,11 +1,10 @@
 from pathlib import Path
 import numpy as np
 import h5py
-from tqdm import tqdm
 
 from functools import partial
-from joblib import Parallel, delayed
 
+from deepx_dock.parallel import parallel_map
 from deepx_dock.misc import load_json_file
 from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME, DEEPX_INFO_FILENAME
 from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
@@ -39,10 +38,7 @@ class DatasetHStandardize:
         data_dir_lister = get_data_dir_lister(
             self.data_dir, self.n_tier, validation_check_H
         )
-        Parallel(n_jobs=self.n_jobs)(
-            delayed(worker)(dir_name)
-            for dir_name in tqdm(data_dir_lister, desc="Data")
-        )
+        parallel_map(worker, data_dir_lister, n_jobs=self.n_jobs, desc="Data")
 
     @staticmethod
     def standardize_one(dir_name: str, all_data_dir, overwrite=False):

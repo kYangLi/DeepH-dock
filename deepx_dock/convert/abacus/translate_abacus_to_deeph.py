@@ -20,12 +20,10 @@ import re
 import shutil
 import traceback
 from typing import List
-
 from tqdm import tqdm
-
 from functools import partial
-from joblib import Parallel, delayed
 
+from deepx_dock.parallel import parallel_map
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
 from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
 from deepx_dock.CONSTANT import DEEPX_POSITION_MATRIX_FILENAME
@@ -175,10 +173,7 @@ class AbacusDatasetTranslator:
             self.abacus_data_dir, self.n_tier, 
             partial(validation_check_abacus, abacus_suffix=self.abacus_suffix)
         )
-        Parallel(n_jobs=self.n_jobs)(
-            delayed(worker)(dir_name)
-            for dir_name in tqdm(data_dir_lister, desc="Data", leave=True)
-        )
+        parallel_map(worker, data_dir_lister, n_jobs=self.n_jobs, desc="Data")
 #         info = '''
 # +-----------------------------------------------------------------+
 # | Thanks for using abacus-deeph interface. The original interface |

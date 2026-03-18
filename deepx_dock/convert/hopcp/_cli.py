@@ -39,7 +39,7 @@ def establish_petsc_install_folder(target_dir: Path, force: bool,):
         click.option('--ignore-S', is_flag=True, help="Do not export SR.petsc"),
         click.option('--ignore-H', is_flag=True, help="Do not export HR.petsc"),
         click.option(
-            '--parallel-num', '-p', type=int, default=-1,
+            "--jobs-num", "-j", type=int, default=-1,
             help="The parallel processing number, -1 for using all of the cores."
         ),
         click.option(
@@ -56,7 +56,7 @@ def translate_deeph_to_petsc(
     petsc_dir: Path,
     ignore_s: bool,
     ignore_h: bool,
-    parallel_num: int,
+    jobs_num: int,
     tier_num: int,
     force: bool,
 ):
@@ -78,7 +78,7 @@ def translate_deeph_to_petsc(
         petsc_dir=petsc_dir,
         export_S=not ignore_s,
         export_H=not ignore_h,
-        n_jobs=parallel_num,
+        n_jobs=jobs_num,
         n_tier=tier_num,
     )
     transfer.transfer_all_deeph_to_petsc()

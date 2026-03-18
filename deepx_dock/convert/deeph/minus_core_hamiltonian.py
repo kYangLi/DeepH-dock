@@ -7,11 +7,10 @@ from pathlib import Path
 import json
 import h5py
 import shutil
-from tqdm import tqdm
 
 from functools import partial
-from joblib import Parallel, delayed
 
+from deepx_dock.parallel import parallel_map
 from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME, DEEPX_INFO_FILENAME
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
 from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
@@ -81,7 +80,7 @@ class SingleAtomHamiltonianHandler:
     def __init__(
         self, full_dir, corrected_dir, single_atoms_dir,
         transform_offsite_blocks=False, copy_other_files=False, backward=False,
-        parallel_num=-1, tier_num=0,
+        n_jobs=-1, n_tier=0,
     ):
         if backward:
             self.input_dir, self.output_dir = corrected_dir, full_dir
@@ -91,12 +90,12 @@ class SingleAtomHamiltonianHandler:
         self.transform_offsite_blocks = transform_offsite_blocks
         self.copy_other_files = copy_other_files
         self.backward = backward
-        self.parallel_num = parallel_num
-        self.tier_num = tier_num
+        self.n_jobs = n_jobs
+        self.n_tier = n_tier
     
     def transfer_all(self):
         data_dir_lister = get_data_dir_lister(
-            self.input_dir, self.tier_num, validation_check_H
+            self.input_dir, self.n_tier, validation_check_H
         )
         elements_orbital_map, spinful = get_dataset_info(
             self.input_dir, self.output_dir, data_dir_lister
@@ -106,7 +105,7 @@ class SingleAtomHamiltonianHandler:
         )
         #
         data_dir_lister = get_data_dir_lister(
-            self.input_dir, self.tier_num, validation_check_H
+            self.input_dir, self.n_tier, validation_check_H
         )
         worker = partial(
             self.transfer_one,
@@ -118,9 +117,7 @@ class SingleAtomHamiltonianHandler:
             copy_other_files=self.copy_other_files, 
             backward=self.backward,
         )
-        Parallel(n_jobs=self.parallel_num)(
-            delayed(worker)(dir_name) for dir_name in tqdm(data_dir_lister, desc="Data")
-        )
+        parallel_map(worker, data_dir_lister, n_jobs=self.n_jobs, desc="Data")
 
     @staticmethod
     def get_elements_quantity(

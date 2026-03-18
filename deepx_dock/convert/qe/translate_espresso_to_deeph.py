@@ -1,8 +1,7 @@
 from pathlib import Path
-from tqdm import tqdm
 from functools import partial
-from joblib import Parallel, delayed
 
+from deepx_dock.parallel import parallel_map
 from deepx_dock.hpro.kernel import PW2AOkernel
 from deepx_dock.misc import get_data_dir_lister
 
@@ -49,10 +48,7 @@ class EspressoDatasetTranslator:
         data_dir_lister = get_data_dir_lister(
             self.espresso_data_dir, self.n_tier, validation_check_qe
         )
-        Parallel(n_jobs=self.n_jobs)(
-            delayed(worker)(dir_name)
-            for dir_name in tqdm(data_dir_lister, desc="Data")
-        )
+        parallel_map(worker, data_dir_lister, n_jobs=self.n_jobs, desc="Data")
 
     @staticmethod
     def transfer_one_espresso_to_deeph(

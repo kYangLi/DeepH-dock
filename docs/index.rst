@@ -55,7 +55,7 @@ Features
 
             .. div:: sd-font-normal
 
-                Leverages optimized algorithms (e.g., KPM and Lanczos) for rapid matrix operations, automated workflows, and robust Hamiltonian processing. Its utility toolkit further enhances efficiency through multi-level parallelism (MPI/Loky), data conversion, and validation tools.
+                Leverages optimized algorithms (e.g., KPM and Lanczos) for rapid matrix operations, automated workflows, and robust Hamiltonian processing. Its utility toolkit further enhances efficiency through optimized parallel processing, data conversion, and validation tools.
 
     .. grid-item::
         :columns: 12 12 12 6
