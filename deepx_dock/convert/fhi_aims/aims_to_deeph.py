@@ -525,14 +525,14 @@ def _read_fermi(aims_dir_path: Path):
     fermi_energy = 0.0
     '''
     ref:
-        | Chemical potential (Fermi level) in eV      :  -.53575976E+01
+        | Chemical potential (Fermi level):    -5.35075436 eV
     '''
     with open(log_path, 'r') as f:
         lines = f.readlines()
     for line in lines:
-        if "| Chemical potential (Fermi level) in eV" in line:
-            fermi_energy = float(line.split(':')[-1].strip())
-            break
+        if "| Chemical potential (Fermi level):" in line:
+            fermi_energy = float(line.split(':')[-1].split()[0].strip())
+            continue
     return fermi_energy
 
 def _trans_mxs_to_entries(start_idx_matrix:np.ndarray, end_idx_matrix:np.ndarray, col_idx:np.ndarray, 
