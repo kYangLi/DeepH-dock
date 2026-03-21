@@ -92,11 +92,6 @@ pyscf = [
     "pyscf",
 ]
 
-fhiaims = [
-    "scalapack4py",
-    "asi4py",
-]
-
 [project.urls]
 Repository = "https://github.com/kYangLi/DeepH-dock.git"
 
