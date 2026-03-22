@@ -11,38 +11,62 @@ class AimsPatcher:
     models and use them as initial guess for SCF calculations.
     """
 
+    _PATCH_DIR = Path(__file__).parent / "patch"
+
     def __init__(self, aims_src_dir: str | Path):
         self.aims_src_dir = Path(aims_src_dir)
-        self._patch_dir = Path(__file__).parent
         self._patch_file: Path | None = None
         self._target_version: str | None = None
-        self._detect_patch_file()
 
-    def _detect_patch_file(self) -> None:
-        """Detect patch file and extract target version from filename."""
-        patch_files = list(self._patch_dir.glob("patch_deepx_fhiaims_*.diff"))
-        if not patch_files:
-            raise FileNotFoundError(
-                f"No patch file found in {self._patch_dir}. Expected file matching pattern: patch_deepx_fhiaims_*.diff"
-            )
-        if len(patch_files) > 1:
-            patch_names = [f.name for f in patch_files]
-            raise ValueError(f"Multiple patch files found: {patch_names}. Please keep only one patch file.")
-        self._patch_file = patch_files[0]
-        self._target_version = self._extract_version_from_patch_name(self._patch_file.name)
+    @classmethod
+    def get_supported_versions(cls) -> list[str]:
+        """
+        Return list of supported FHI-aims versions.
 
-    def _extract_version_from_patch_name(self, patch_name: str) -> str:
+        Scans patch directory for patch_deepx_fhiaims_*.diff files and extracts
+        version numbers from filenames.
+
+        Returns
+        -------
+        list[str]
+            Sorted list of supported version strings (e.g., ["250822_1", "251231"])
+        """
+        versions = []
+        if not cls._PATCH_DIR.is_dir():
+            return versions
+        for patch_file in cls._PATCH_DIR.glob("patch_deepx_fhiaims_*.diff"):
+            try:
+                version = cls._extract_version_from_patch_name(patch_file.name)
+                versions.append(version)
+            except ValueError:
+                continue
+        return sorted(versions)
+
+    @classmethod
+    def _extract_version_from_patch_name(cls, patch_name: str) -> str:
         """
         Extract FHI-aims version from patch filename.
 
-        Pattern: patch_deepx_fhiaims_YYMMDD_N.diff
-        Example: patch_deepx_fhiaims_250822_1.diff -> "250822_1"
+        Parameters
+        ----------
+        patch_name : str
+            Patch filename, e.g., "patch_deepx_fhiaims_250822_1.diff"
+
+        Returns
+        -------
+        str
+            Version string, e.g., "250822_1" or "250822"
+
+        Raises
+        ------
+        ValueError
+            If version cannot be extracted from filename
         """
-        match = re.search(r"patch_deepx_fhiaims_(\d{6}_\d+)\.diff", patch_name)
+        match = re.search(r"patch_deepx_fhiaims_(\d{6}(?:_\d+)?)\.diff", patch_name)
         if not match:
             raise ValueError(
                 f"Cannot extract version from patch filename: {patch_name}. "
-                "Expected pattern: patch_deepx_fhiaims_YYMMDD_N.diff"
+                "Expected pattern: patch_deepx_fhiaims_YYMMDD_N.diff or patch_deepx_fhiaims_YYMMDD.diff"
             )
         return match.group(1)
 
@@ -52,46 +76,52 @@ class AimsPatcher:
 
         Reads the first line of README.md which contains version info like:
         "# FHI-aims code distribution, 250822_1"
+
+        Returns
+        -------
+        str | None
+            Version string (e.g., "250822_1") or None if not found
         """
         readme_path = self.aims_src_dir / "README.md"
         if not readme_path.is_file():
             return None
         with open(readme_path, "r") as f:
             first_line = f.readline().strip()
-        match = re.search(r"(\d{6}_\d+)", first_line)
+        match = re.search(r"(\d{6}(?:_\d+)?)", first_line)
         if match:
             return match.group(1)
+        return None
+
+    def _find_patch_for_version(self, version: str) -> Path | None:
+        """
+        Find patch file matching the given version.
+
+        Parameters
+        ----------
+        version : str
+            FHI-aims version string (e.g., "250822_1" or "250822")
+
+        Returns
+        -------
+        Path | None
+            Path to the patch file, or None if not found
+        """
+        if not self._PATCH_DIR.is_dir():
+            return None
+
+        for patch_file in self._PATCH_DIR.glob("patch_deepx_fhiaims_*.diff"):
+            try:
+                patch_version = self._extract_version_from_patch_name(patch_file.name)
+                if patch_version == version:
+                    return patch_file
+            except ValueError:
+                continue
         return None
 
     def _check_already_patched(self) -> bool:
         """Check if aims source has already been patched."""
         deeph_interface_dir = self.aims_src_dir / "src" / "deeph_interface"
         return deeph_interface_dir.is_dir()
-
-    def validate(self) -> tuple[bool, str]:
-        """
-        Validate that the aims source directory can be patched.
-
-        Returns
-        -------
-        tuple[bool, str]
-            (is_valid, message)
-        """
-        if not self.aims_src_dir.is_dir():
-            return False, f"Directory does not exist: {self.aims_src_dir}"
-
-        src_dir = self.aims_src_dir / "src"
-        if not src_dir.is_dir():
-            return False, f"Not a valid FHI-aims source directory: {self.aims_src_dir}/src not found"
-
-        detected_version = self._detect_aims_version()
-        if detected_version is None:
-            return False, f"Cannot detect FHI-aims version from {self.aims_src_dir}/README.md"
-
-        if detected_version != self._target_version:
-            return False, (f"Version mismatch: patch targets {self._target_version}, but detected {detected_version}")
-
-        return True, f"Version {detected_version} matches patch target"
 
     def apply_patch(self, force: bool = False) -> None:
         """
@@ -101,18 +131,41 @@ class AimsPatcher:
         ----------
         force : bool
             If True, apply patch even if already patched (may fail)
+
+        Raises
+        ------
+        RuntimeError
+            If validation fails or patch cannot be applied
         """
-        is_valid, msg = self.validate()
-        if not is_valid:
-            raise RuntimeError(f"Validation failed: {msg}")
+        if not self.aims_src_dir.is_dir():
+            raise RuntimeError(f"Directory does not exist: {self.aims_src_dir}")
+
+        src_dir = self.aims_src_dir / "src"
+        if not src_dir.is_dir():
+            raise RuntimeError(f"Not a valid FHI-aims source directory: {self.aims_src_dir}/src not found")
+
+        detected_version = self._detect_aims_version()
+        if detected_version is None:
+            raise RuntimeError(f"Cannot detect FHI-aims version from {self.aims_src_dir}/README.md")
+
+        self._patch_file = self._find_patch_for_version(detected_version)
+        if self._patch_file is None:
+            supported = self.get_supported_versions()
+            if supported:
+                raise RuntimeError(
+                    f"FHI-aims version {detected_version} is not supported. Supported versions: {', '.join(supported)}"
+                )
+            else:
+                raise RuntimeError(
+                    f"FHI-aims version {detected_version} is not supported. No patch files found in {self._PATCH_DIR}"
+                )
+
+        self._target_version = detected_version
 
         if self._check_already_patched() and not force:
             raise RuntimeError(
                 "FHI-aims source already patched (src/deeph_interface exists). Use --force to re-apply patch."
             )
-
-        if self._patch_file is None:
-            raise RuntimeError("No patch file found")
 
         patch_cmd = [
             "patch",
@@ -196,7 +249,7 @@ cd your_calculation
 ln -s /path/to/deeph_output ./deepx_warm
 ```
 
-Alternatively, you can name the directory `deepx_warm` (both names are supported).
+Alternatively, you can name the directory `deeph_warm` (both names are supported).
 
 ### Enable Warmstart in control.in
 
@@ -326,12 +379,12 @@ If you use this patch in your research, please cite:
     def target_version(self) -> str:
         """Target FHI-aims version for this patch."""
         if self._target_version is None:
-            raise RuntimeError("Patch file not detected")
+            raise RuntimeError("Version not yet detected")
         return self._target_version
 
     @property
     def patch_file(self) -> Path:
         """Path to the patch file."""
         if self._patch_file is None:
-            raise RuntimeError("Patch file not detected")
+            raise RuntimeError("Patch file not yet selected")
         return self._patch_file

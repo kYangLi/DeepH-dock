@@ -109,6 +109,23 @@
        ! Igor, to restart RPA
        logical :: restart_rpa_file_exists
        character*40 :: restart_rpa_read_file
+@@ -3028,10 +3030,12 @@
+          restart_read  = .false.
+          restart_save_iterations = 0
+          use_restart_save_iterations = .false.
+-         restart_exx_write = .false.
+-         restart_exx_read = .false.
+-         restart_exx_3c_int = .false.
+-         restart_rpa_file_exists = .false.
++restart_exx_write = .false.
++          restart_exx_read = .false.
++          restart_exx_3c_int = .false.
++          ! DeepX/DeepH warmstart
++          use_deepx_warmstart = .false.
++          restart_rpa_file_exists = .false.
+          restart_rpa_read_file = 'aims_restart_rpa_information.dat'
+          restart_rpa_write_file='aims_restart_rpa_information.dat'
+          restart_rpa_write = .false.
 --- a/src/read_control.f90
 +++ b/src/read_control.f90
 @@ -8286,10 +8286,17 @@
@@ -286,38 +303,64 @@
            if (n_spin .eq. 1) then
              i_spin = 1
              rho(i_spin,:) = rho(i_spin,:) + delta_rho_KS(:,i_spin)
-@@ -1091,6 +1113,9 @@
+@@ -1044,10 +1066,13 @@
+                 kinetic_density(1,:) = kinetic_density(1,:) + 0.5d0*(delta_kinetic_density(:,1)+delta_kinetic_density(:,2))
+                 kinetic_density(2,:) = kinetic_density(2,:) + 0.5d0*(delta_kinetic_density(:,1)-delta_kinetic_density(:,2))
+               end if
+-            end if
+-          end if
++end if
++           end if
++
++          ! DeepH
++          call deeph_finalize_hotstart_nomix()
+ 
+-        else if (mixer.eq.MIX_LINEAR) then
++         else if (mixer.eq.MIX_LINEAR) then
+           ! linear mixing
+           call linear_mix_p1(partition_tab, hartree_partition_tab, rho, &
+                              rho_gradient,kinetic_density)
+@@ -1090,7 +1115,7 @@
+           call execute_broyden_mixing(number_of_loops, partition_tab, &
                                        hartree_partition_tab, rho, rho_gradient, kinetic_density)
          end if
-         
-+        ! DeepX: finalize hotstart nomix
-+        call deeph_finalize_hotstart_nomix()
-+        
+-        
++
          info_str = "Available memory per node after mixing"
          call show_free(info_str)
  
-@@ -1398,6 +1423,8 @@
-         call get_times(time_intg, clock_time_intg, &
-         &              tot_time_intg, tot_clock_time_intg)
+@@ -1209,6 +1234,8 @@
+ 
+ !------------------- Compute REAL SPACE Hamiltonian Matrix ------------------->>
+ 
++        call deeph_prepare_iteration_hamiltonian(hamiltonian)
++
+         ! Construct the REAL SPACE Hamiltonian matrix via the batch integration
+         ! scheme. A complete description including illustrations can be found in
+         ! Huhn et al., Computer Physics Communications 254 (2020) 107314,
+@@ -1280,6 +1307,8 @@
+ 
+         call get_timestamps(time_intg, clock_time_intg)
  
 +        if (.not. deeph_should_skip_hamiltonian_updates()) then
 +
-         if (ASI_callbacks%isSetH()) then
-            call ASI_callbacks%invokeSetH(hamiltonian)
+         if(use_local_index .and. (.not.use_scalapack_q4c)) then
+           if(use_load_balancing) then
+             ! If load balancing is in effect, there already exists a batch
+@@ -1395,6 +1424,12 @@
+ 
+           end if
          end if
-@@ -1406,6 +1433,11 @@
- 
-         call ASI_callbacks%invokeModifyH(hamiltonian)
- 
++
 +        else
 +          write(info_str,'(2X,A)') 'DeepX restart: injected Hamiltonian active; skipping this-iteration real-space integration.'
 +          call localorb_info(info_str,use_unit,'(A)', OL_norm)
 +        end if
 +
-         
- !------------------- Calculate Fock Matrix (When Applicable) ----------------->>
+         call get_times(time_intg, clock_time_intg, &
+         &              tot_time_intg, tot_clock_time_intg)
  
-@@ -1420,7 +1452,7 @@
+@@ -1420,7 +1455,7 @@
          ! mostly likely to be called for both periodic and non-periodic
          ! calculations.
  
@@ -326,17 +369,54 @@
            call get_timestamps(time_fock, clock_time_fock)
  
            ! FK: In general, the EXX forces are switched on when the force
-@@ -1515,7 +1547,9 @@
+@@ -1515,7 +1550,7 @@
          ! Kohn-Sham eigenvalue problem.  The subroutine that performs the
          ! heavy lifting in this section is advance_KS_solution().
  
 -        if (use_embedding_pp) then
-+        call deeph_prepare_iteration_hamiltonian(hamiltonian)
-+
 +        if ((.not. deeph_should_skip_hamiltonian_updates()) .and. use_embedding_pp) then
              call get_timestamps(time_embedding, clock_time_embedding)
              call add_nonlocal_pot(hamiltonian)
              call get_times(time_embedding, clock_time_embedding, &
+@@ -1623,12 +1658,14 @@
+            end if
+         end if
+ 
+-        if (use_friction.or.output_rs_matrices.or.use_superconduct) then
+-          call store_hamiltonian()
+-          if (use_scalapack) then
+-            call save_hamiltonian_scalapack()
+-          endif
+-      endif
++!if (use_friction.or.output_rs_matrices.or.use_superconduct) then
++        call store_hamiltonian()
++        if (use_scalapack) then
++          call save_hamiltonian_scalapack()
++        endif
++!endif
++
++        call deeph_maybe_log_preks_fingerprint(hamiltonian)
+ 
+         ! Now set first_iteration to false
+         first_iteration = .false.
+@@ -1658,9 +1695,15 @@
+ 
+         if(use_periodic_hf) then !.and. flag_xc_pre < 0)then
+            ! Make sure occ_numbers_save is always defined
+-           if(restart_zero_iteration) then
+-              occ_numbers_save = occ_numbers
++           ! ====================== DeepX: occ_num save ==============================
++          if (restart_zero_iteration .or. deeph_should_force_density_hotstart()) then
++            if (deeph_should_force_density_hotstart()) then
++              write(info_str,'(2X,A)') 'DeepX restart: first-iteration density hotstart (no Pulay/Broyden mixing history used).'
++              call localorb_info(info_str,use_unit,'(A)', OL_norm)
++            end if
++               occ_numbers_save = occ_numbers
+            end if
++           ! ======================================================================
+ 
+            ! For evaluations of the total energy only (without SCF) for
+            ! non-equilibrium density, the Fock energy must be evaluated here
 --- /dev/null
 +++ b/src/deeph_interface/include/rs_mx_trans.f90
 @@ -0,0 +1,518 @@

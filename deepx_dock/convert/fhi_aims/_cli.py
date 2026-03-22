@@ -3,9 +3,34 @@ from pathlib import Path
 from deepx_dock._cli.registry import register
 
 
+def _get_supported_versions_str() -> str:
+    """Get formatted list of supported FHI-aims versions."""
+    from deepx_dock.convert.fhi_aims.patch_aims import AimsPatcher
+
+    versions = AimsPatcher.get_supported_versions()
+    if not versions:
+        return "  - none"
+    return "\n".join(f"  - {v}" for v in versions)
+
+
+_SUPPORTED_VERSIONS = _get_supported_versions_str()
+
+
 @register(
     cli_name="patch-aims",
-    cli_help="Apply DeepH patch to FHI-aims source code to enable DeepX warmstart support.",
+    cli_help="""
+Apply DeepH patch to FHI-aims source for DeepX warmstart support.
+
+\b
+  1. Download FHI-aims from https://fhi-aims.org (registration required)
+  2. Extract: tar -xzf FHIaims.YYMMDD_N.tar.gz (or *.zip or whatever)
+  3. Run: dock convert fhi-aims patch-aims FHIaims.YYMMDD_N
+  4. Read DEEPH_WARMSTART_USAGE.md inside FHIaims.YYMMDD_N for build/usage instructions
+
+\b
+Supported FHI-aims versions:
+{versions}
+""".format(versions=_SUPPORTED_VERSIONS),
     cli_args=[
         click.argument(
             "aims_src_dir",
@@ -23,20 +48,23 @@ def patch_aims(aims_src_dir: Path, dry_run: bool, force: bool):
 
     patcher = AimsPatcher(aims_src_dir)
 
-    click.echo(f"[info] Patch file: {patcher.patch_file.name}")
-    click.echo(f"[info] Target FHI-aims version: {patcher.target_version}")
-
     detected_version = patcher._detect_aims_version()
-    if detected_version:
-        if detected_version == patcher.target_version:
-            click.echo(f"[info] Detected FHI-aims version: {detected_version} ✓")
-        else:
-            click.echo(f"[error] Detected FHI-aims version: {detected_version} ✗")
-            raise click.ClickException(
-                f"Version mismatch: patch targets {patcher.target_version}, but detected {detected_version}"
-            )
-    else:
+    if detected_version is None:
         raise click.ClickException(f"Cannot detect FHI-aims version from {aims_src_dir}/README.md")
+
+    click.echo(f"[info] Detected FHI-aims version: {detected_version}")
+
+    supported_versions = AimsPatcher.get_supported_versions()
+    if detected_version not in supported_versions:
+        click.echo(f"[error] Version {detected_version} is not supported")
+        if supported_versions:
+            click.echo(f"[error] Supported versions: {', '.join(supported_versions)}")
+        raise click.ClickException(f"FHI-aims version {detected_version} is not supported")
+
+    patch_file = patcher._find_patch_for_version(detected_version)
+    assert patch_file is not None
+    click.echo(f"[info] Patch file: {patch_file.name}")
+    click.echo(f"[info] Version {detected_version} is supported ✓")
 
     if dry_run:
         click.echo("[dry-run] Validation passed. Patch would be applied.")
@@ -77,7 +105,6 @@ def patch_aims(aims_src_dir: Path, dry_run: bool, force: bool):
 def translate_vasp_to_deeph(aims_dir: Path, deeph_dir: Path, tier_num: int):
     aims_dir = Path(aims_dir)
     deeph_dir = Path(deeph_dir)
-    #
     from deepx_dock.convert.fhi_aims.single_atom_aims_to_deeph import SingleAtomDataTranslatorToDeepH
 
     translator = SingleAtomDataTranslatorToDeepH(aims_dir, deeph_dir, tier_num)
@@ -129,7 +156,6 @@ def translate_aims_to_deeph(
         click.confirm(f"The DeepH data path '{deeph_dir}' already exists. Continue?", abort=True)
     else:
         deeph_dir.mkdir(parents=True, exist_ok=True)
-    #
     from deepx_dock.convert.fhi_aims.aims_to_deeph import PeriodicAimsDataTranslator
 
     translator = PeriodicAimsDataTranslator(
