@@ -34,6 +34,7 @@ dependencies = [
     "click",
     "ase",
     "mpi4py",
+    "hpro",
 ]
 
 [project.optional-dependencies]
@@ -92,11 +93,6 @@ pyscf = [
     "pyscf",
 ]
 
-fhiaims = [
-    "scalapack4py",
-    "asi4py",
-]
-
 [project.urls]
 Repository = "https://github.com/kYangLi/DeepH-dock.git"
 
@@ -128,3 +124,43 @@ line-length = 120
 
 [tool.ruff]
 line-length = 120
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "unit: Unit tests (fast, isolated)",
+    "integration: Integration tests (slower, use real data)",
+    "slow: Slow tests",
+]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "-ra",
+    "-rP",
+    "--cov=deepx_dock",
+    "--cov-report=term-missing",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["deepx_dock"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "*/site-packages/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+]
+precision = 2
