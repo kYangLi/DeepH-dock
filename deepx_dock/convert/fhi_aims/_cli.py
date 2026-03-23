@@ -19,7 +19,7 @@ _SUPPORTED_VERSIONS = _get_supported_versions_str()
 @register(
     cli_name="patch-aims",
     cli_help="""
-Apply DeepH patch to FHI-aims source for DeepX warmstart support.
+Apply a patch to FHI-aims source for DeepX warmstart support (periodic mode only).
 
 \b
   1. Download FHI-aims from https://fhi-aims.org (registration required)
@@ -82,8 +82,8 @@ def patch_aims(aims_src_dir: Path, dry_run: bool, force: bool):
 
 
 @register(
-    cli_name="single-atom-to-deeph",
-    cli_help="Translate the FHI-aims output data of single atom calculation to DeepH DFT data training set format.",
+    cli_name="cluster-to-deeph",
+    cli_help="Translate the FHI-aims output data of cluster (currently only supports single atom) calculation to DeepH DFT data training set format.",
     cli_args=[
         click.argument(
             "aims_dir",
@@ -102,7 +102,7 @@ def patch_aims(aims_src_dir: Path, dry_run: bool, force: bool):
         ),
     ],
 )
-def translate_vasp_to_deeph(aims_dir: Path, deeph_dir: Path, tier_num: int):
+def translate_cluster_aims_to_deeph(aims_dir: Path, deeph_dir: Path, tier_num: int):
     aims_dir = Path(aims_dir)
     deeph_dir = Path(deeph_dir)
     from deepx_dock.convert.fhi_aims.single_atom_aims_to_deeph import SingleAtomDataTranslatorToDeepH
@@ -141,7 +141,7 @@ def translate_vasp_to_deeph(aims_dir: Path, deeph_dir: Path, tier_num: int):
         click.option("--force", is_flag=True, help="Force to overwrite the existing files."),
     ],
 )
-def translate_aims_to_deeph(
+def translate_periodic_aims_to_deeph(
     aims_dir: Path,
     deeph_dir: Path,
     jobs_num: int,
