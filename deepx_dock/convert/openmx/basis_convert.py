@@ -143,7 +143,7 @@ def parse_openmx_pao(filepath: Path) -> dict:
 
 def save_basis_to_hdf5(data: dict, output_path: Path) -> None:
     """
-    Save parsed basis data to standardized HDF5 format (v0.9.16).
+    Save parsed basis data to standardized HDF5 format.
 
     Flat structure with all radial functions in a single matrix.
     Radial functions are stored in their original form (normalized from PAO).

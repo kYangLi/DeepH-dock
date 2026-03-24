@@ -1,7 +1,7 @@
 # Basis Standardization Design
 
 **Status**: ✅ Complete  
-**Version**: 0.9.16  
+**Version**: 0.9.12  
 **Last Updated**: 2025-03-24
 
 ---
@@ -29,7 +29,7 @@ OpenMX input (.dat) + basis.h5 → HPRO → overlap.h5, POSCAR, info.json
 
 ## Standard Basis Format (basis.h5)
 
-### Structure (v0.9.16 - Flat Format)
+### Structure (Flat Format)
 
 ```
 basis.h5

@@ -1,7 +1,7 @@
 # Development Guide
 
 **Status**: ✅ Implemented  
-**Version**: 0.9.11  
+**Version**: 0.9.12  
 **Last Updated**: 2025-03-08
 
 ---

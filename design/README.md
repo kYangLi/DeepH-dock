@@ -17,7 +17,7 @@ Technical design documents for developers and AI agents.
 
 ## Key Design Documents
 
-### Basis Standardization (v0.9.16)
+### Basis Standardization (v0.9.12)
 
 **File**: [basis_standardization.md](basis_standardization.md)
 

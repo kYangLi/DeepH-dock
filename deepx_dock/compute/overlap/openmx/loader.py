@@ -11,7 +11,7 @@ from HPRO.utils.misc import atom_number2name
 
 class BasisLoader:
     """
-    Loader for standardized basis.h5 format (v0.9.16).
+    Loader for standardized basis.h5 format.
 
     Provides convenient access to radial basis functions by (l, mul) indices.
     """
@@ -125,7 +125,7 @@ class BasisLoader:
 
 def load_basis_h5(filepath: Path, orbital_selection: Optional[Dict[int, int]] = None) -> List[GridFunc]:
     """
-    Load GridFunc objects from standardized basis.h5 file (v0.9.16).
+    Load GridFunc objects from standardized basis.h5 file.
 
     Parameters
     ----------
