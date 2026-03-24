@@ -7,12 +7,12 @@ from functools import lru_cache
 from typing import Optional
 
 from .aodata import AOData_siesta
-from deepx_dock.hpro.utils.structure import Structure
-from deepx_dock.hpro.utils.supercell import SuperCell
-from deepx_dock.hpro.utils.misc import atom_number2name
-from deepx_dock.hpro.matao.findpairs import find_orb_pairs_proj
-from deepx_dock.hpro.matao.findpairs import find_orb_pairs_direct
-from deepx_dock.hpro.matao.matao import pairs_to_indices
+from HPRO.utils.structure import Structure
+from HPRO.utils.supercell import SuperCell
+from HPRO.utils.misc import atom_number2name
+from HPRO.matao.findpairs import find_orb_pairs_proj
+from HPRO.matao.findpairs import find_orb_pairs_direct
+from HPRO.matao.matao import pairs_to_indices
 
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
 from deepx_dock.CONSTANT import DEEPX_PREDICT_HAMILTONIAN_FILENAME

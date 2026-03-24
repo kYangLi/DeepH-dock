@@ -1,8 +1,9 @@
 from pathlib import Path
 from functools import partial
 
+from HPRO.kernel import PW2AOkernel
+
 from deepx_dock.parallel import parallel_map
-from deepx_dock.hpro.kernel import PW2AOkernel
 from deepx_dock.misc import get_data_dir_lister
 
 QE_VSC_FILENAME = "VSC"

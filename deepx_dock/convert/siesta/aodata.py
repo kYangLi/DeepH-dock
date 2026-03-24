@@ -1,10 +1,10 @@
 import numpy as np
 
-from deepx_dock.hpro.utils.orbutils import GridFunc, LinearRGD
-from deepx_dock.hpro.utils.structure import Structure
-from deepx_dock.hpro.utils.misc import atom_number2name
-from deepx_dock.hpro.utils.math import get_dmat_coeffs
-from deepx_dock.hpro.io.aodata import AOData
+from HPRO.utils.orbutils import GridFunc, LinearRGD
+from HPRO.utils.structure import Structure
+from HPRO.utils.misc import atom_number2name
+from HPRO.utils.math import get_dmat_coeffs
+from HPRO.io.aodata import AOData
 
 class GridFunc_siesta(GridFunc):
     '''
