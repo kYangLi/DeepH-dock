@@ -143,10 +143,18 @@ def parse_openmx_pao(filepath: Path) -> dict:
 
 def save_basis_to_hdf5(data: dict, output_path: Path) -> None:
     """
-    Save parsed basis data to standardized HDF5 format.
+    Save parsed basis data to standardized HDF5 format (v0.9.13).
 
-    Flat structure with all radial functions in a single matrix.
-    Radial functions are stored in their original form (normalized from PAO).
+    Structure:
+    - mul_list: [lmax+1] - orbitals per L
+    - cutoff_radii: [M] - per-orbital cutoff radius (Bohr)
+    - grid_length: [M] - effective grid points per orbital
+    - radius_grid: [M, N_max] - 2D grid matrix (linear extrapolation padding)
+    - radius_basis: [M, N_max] - radial functions (padded with 0.0)
+
+    Padding rules:
+    - radius_grid: extrapolate from r_max to ~2*r_max using average spacing
+    - radius_basis: fill with 0.0
 
     Parameters
     ----------
@@ -159,9 +167,14 @@ def save_basis_to_hdf5(data: dict, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     lmax = data["lmax"]
+    radial_cutoff = data["radial_cutoff"]
+    grid_r = data["r"]
+    n_grid = len(grid_r)
 
     mul_list = []
     radial_basis_list = []
+    cutoff_radii_list = []
+    grid_length_list = []
 
     for L in range(lmax + 1):
         if L in data["orbitals"]:
@@ -170,9 +183,35 @@ def save_basis_to_hdf5(data: dict, output_path: Path) -> None:
             mul_list.append(mul_count)
             for mu in range(mul_count):
                 if mu in orbitals_L:
-                    radial_basis_list.append(orbitals_L[mu]["func"])
+                    func = orbitals_L[mu]["func"]
+                    radial_basis_list.append(func)
+                    cutoff_radii_list.append(radial_cutoff)
+                    grid_length_list.append(len(func))
         else:
             mul_list.append(0)
+
+    total_orbitals = sum(mul_list)
+    n_max = n_grid
+
+    cutoff_radii = np.array(cutoff_radii_list, dtype=np.float64)
+    grid_length = np.array(grid_length_list, dtype=np.int32)
+
+    radius_grid = np.zeros((total_orbitals, n_max), dtype=np.float64)
+    radius_basis = np.zeros((total_orbitals, n_max), dtype=np.float64)
+
+    for i in range(total_orbitals):
+        ni = grid_length[i]
+        radius_grid[i, :ni] = grid_r[:ni]
+        radius_basis[i, :ni] = radial_basis_list[i][:ni]
+
+        if ni < n_max:
+            r_max = grid_r[ni - 1]
+            dr = r_max / ni
+            for j in range(ni, n_max):
+                radius_grid[i, j] = r_max + dr * (j - ni + 1)
+
+    assert len(cutoff_radii) == total_orbitals, "cutoff_radii count mismatch"
+    assert len(grid_length) == total_orbitals, "grid_length count mismatch"
 
     with h5py.File(output_path, "w") as f:
         f.attrs["element"] = data["element"]
@@ -181,9 +220,11 @@ def save_basis_to_hdf5(data: dict, output_path: Path) -> None:
         f.attrs["normalized"] = True
         f.attrs["units_length"] = "bohr"
 
-        f.create_dataset("radial_grid", data=data["r"])
         f.create_dataset("mul_list", data=np.array(mul_list, dtype=np.int32))
-        f.create_dataset("radial_basis", data=np.array(radial_basis_list, dtype=np.float64))
+        f.create_dataset("cutoff_radii", data=cutoff_radii)
+        f.create_dataset("grid_length", data=grid_length)
+        f.create_dataset("radius_grid", data=radius_grid)
+        f.create_dataset("radius_basis", data=radius_basis)
 
 
 def convert_pao_to_h5(pao_path: Path, h5_path: Path) -> None:

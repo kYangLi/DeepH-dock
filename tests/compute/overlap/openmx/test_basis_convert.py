@@ -154,19 +154,51 @@ def test_hdf5_loading():
         for key, val in f.attrs.items():
             print(f"  - {key}: {val}")
 
-        print("\n✓ Radial grid:")
-        print(
-            f"  - radial_grid: shape={f['radial_grid'].shape}, range=[{f['radial_grid'][0]:.6f}, {f['radial_grid'][-1]:.6f}]"
-        )
-
         print("\n✓ Orbital structure:")
         mul_list = f["mul_list"][:]
         print(f"  - mul_list: {mul_list}")
         print(f"  - lmax: {len(mul_list) - 1}")
         print(f"  - total_orbitals: {np.sum(mul_list)}")
 
-        print("\n✓ Radial basis matrix:")
-        print(f"  - radial_basis: shape={f['radial_basis'].shape}")
+        print("\n✓ Cutoff radii:")
+        cutoff_radii = f["cutoff_radii"][:]
+        print(f"  - cutoff_radii: shape={cutoff_radii.shape}")
+        print(f"  - min cutoff: {cutoff_radii.min():.4f} Bohr")
+        print(f"  - max cutoff: {cutoff_radii.max():.4f} Bohr")
+        print(f"  - uniform cutoff: {np.allclose(cutoff_radii, cutoff_radii[0])}")
+
+        print("\n✓ Grid length:")
+        grid_length = f["grid_length"][:]
+        print(f"  - grid_length: shape={grid_length.shape}")
+        print(f"  - unique values: {np.unique(grid_length)}")
+
+        print("\n✓ Radius grid (2D matrix):")
+        radius_grid = f["radius_grid"][:]
+        print(f"  - shape: {radius_grid.shape}")
+        print(f"  - first row range: [{radius_grid[0, 0]:.6f}, {radius_grid[0, -1]:.6f}]")
+        print(f"  - inf count: {np.sum(np.isinf(radius_grid))}")
+        print(f"  - nan count: {np.sum(np.isnan(radius_grid))}")
+
+        print("\n✓ Radius basis (2D matrix):")
+        radius_basis = f["radius_basis"][:]
+        print(f"  - shape: {radius_basis.shape}")
+
+        print("\n✓ Validation:")
+        M, N_max = radius_grid.shape
+        for i in range(min(3, M)):
+            ni = grid_length[i]
+            valid_grid = radius_grid[i, :ni]
+            valid_basis = radius_basis[i, :ni]
+            print(f"  - Orbital {i}: grid_len={ni}, valid_grid_range=[{valid_grid[0]:.4f}, {valid_grid[-1]:.4f}]")
+            if ni < N_max:
+                padded_grid = radius_grid[i, ni:]
+                padded_basis = radius_basis[i, ni:]
+                print(
+                    f"    padded_grid_range=[{padded_grid[0]:.4f}, {padded_grid[-1]:.4f}], "
+                    f"basis_padded_allzero={np.allclose(padded_basis, 0)}"
+                )
+            else:
+                print("    no padding needed (ni == N_max)")
 
     print("\n" + "=" * 60)
     print("TEST 4: PASSED ✓")

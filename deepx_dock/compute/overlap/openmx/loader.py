@@ -3,10 +3,58 @@ from typing import Dict, List, Optional
 import numpy as np
 import h5py
 
-from HPRO.utils.orbutils import GridFunc, ExpRGD
+from HPRO.utils.orbutils import GridFunc, LinearRGD
 from HPRO.utils.structure import Structure
 from HPRO.io.aodata import AOData
 from HPRO.utils.misc import atom_number2name
+
+
+def _interpolate_to_linear_grid(
+    r_orig: np.ndarray,
+    func_orig: np.ndarray,
+    rcut: float,
+    ell: int,
+    rdense: float,
+) -> GridFunc:
+    """
+    Interpolate from PAO's internal grid to uniform linear grid (OpenMX style).
+
+    Parameters
+    ----------
+    r_orig : np.ndarray
+        Original grid points (PAO uses logarithmic grid internally)
+    func_orig : np.ndarray
+        Function values on original grid
+    rcut : float
+        Cutoff radius
+    ell : int
+        Angular momentum
+    rdense : float
+        Linear grid density (points per Bohr)
+
+    Returns
+    -------
+    GridFunc
+        GridFunc on linear grid
+    """
+    from scipy.interpolate import CubicSpline
+
+    npoints = max(int(rcut * rdense), 10)
+    r_linear = np.linspace(0, rcut, npoints)
+
+    spline = CubicSpline(r_orig, func_orig)
+    func_linear = spline(r_linear)
+
+    if ell == 0:
+        func_linear[r_linear < r_orig[0]] = func_orig[0]
+    else:
+        func_linear[r_linear < r_orig[0]] = 0.0
+
+    func_linear[r_linear > rcut] = 0.0
+
+    rgd_linear = LinearRGD(0, rcut, npoints)
+
+    return GridFunc(rgd_linear, func_linear, l=ell, rcut=rcut)
 
 
 class BasisLoader:
@@ -14,6 +62,13 @@ class BasisLoader:
     Loader for standardized basis.h5 format.
 
     Provides convenient access to radial basis functions by (l, mul) indices.
+    Supports per-orbital grids and cutoff radii for heterogeneous basis sets.
+
+    Storage format:
+    - radius_grid: [M, N_max] - 2D grid matrix (linear extrapolation padding)
+    - radius_basis: [M, N_max] - radial functions (padded with 0.0)
+    - grid_length: [M] - effective grid points per orbital
+    - cutoff_radii: [M] - per-orbital cutoff radius
     """
 
     def __init__(self, filepath: Path):
@@ -34,16 +89,37 @@ class BasisLoader:
             self.normalized: bool = f.attrs["normalized"]
             self.units_length: str = f.attrs["units_length"]
 
-            self.radial_grid: np.ndarray = f["radial_grid"][:]
             self.mul_list: np.ndarray = f["mul_list"][:]
-            self.radial_basis: np.ndarray = f["radial_basis"][:]
+            self.cutoff_radii: np.ndarray = f["cutoff_radii"][:]
+            self.grid_length: np.ndarray = f["grid_length"][:]
+            self.radius_grid: np.ndarray = f["radius_grid"][:]
+            self.radius_basis: np.ndarray = f["radius_basis"][:]
 
-        self.rgd = ExpRGD.from_explicit_grid(self.radial_grid)
         self.lmax = len(self.mul_list) - 1
         self.total_orbitals = int(np.sum(self.mul_list))
-        self.radial_cutoff = float(self.radial_grid.max())
+        self.max_cutoff = float(self.cutoff_radii.max())
 
         self._offsets = np.cumsum(np.concatenate([[0], self.mul_list]))[:-1]
+
+    def get_orbital_grid(self, ell: int, mul: int) -> np.ndarray:
+        """
+        Get radial grid for specific (l, mul).
+
+        Parameters
+        ----------
+        ell : int
+            Angular momentum quantum number.
+        mul : int
+            Multiplicity index (0-indexed).
+
+        Returns
+        -------
+        np.ndarray
+            Radial grid points (Bohr).
+        """
+        idx = self._get_flat_index(ell, mul)
+        ni = self.grid_length[idx]
+        return self.radius_grid[idx, :ni]
 
     def get_orbital(self, ell: int, mul: int) -> np.ndarray:
         """
@@ -61,49 +137,77 @@ class BasisLoader:
         np.ndarray
             Radial function on the grid.
         """
-        if ell < 0 or ell > self.lmax:
-            raise ValueError(f"ell={ell} out of range [0, {self.lmax}]")
-        if mul < 0 or mul >= self.mul_list[ell]:
-            raise ValueError(f"mul={mul} out of range [0, {self.mul_list[ell]})")
+        idx = self._get_flat_index(ell, mul)
+        ni = self.grid_length[idx]
+        return self.radius_basis[idx, :ni]
 
-        idx = self._offsets[ell] + mul
-        return self.radial_basis[idx]
-
-    def get_all_l(self, ell: int) -> np.ndarray:
+    def get_cutoff(self, ell: int, mul: int) -> float:
         """
-        Get all orbitals for a given angular momentum l.
+        Get cutoff radius for specific (l, mul).
 
         Parameters
         ----------
         ell : int
             Angular momentum quantum number.
+        mul : int
+            Multiplicity index (0-indexed).
 
         Returns
         -------
-        np.ndarray
-            Array of shape [mul_max_l, Nr] containing all radial functions for this l.
+        float
+            Cutoff radius (Bohr).
         """
+        idx = self._get_flat_index(ell, mul)
+        return float(self.cutoff_radii[idx])
+
+    def get_grid_length(self, ell: int, mul: int) -> int:
+        """
+        Get grid length for specific (l, mul).
+
+        Parameters
+        ----------
+        ell : int
+            Angular momentum quantum number.
+        mul : int
+            Multiplicity index (0-indexed).
+
+        Returns
+        -------
+        int
+            Number of grid points.
+        """
+        idx = self._get_flat_index(ell, mul)
+        return int(self.grid_length[idx])
+
+    def _get_flat_index(self, ell: int, mul: int) -> int:
+        """Get flat index from (l, mul)."""
         if ell < 0 or ell > self.lmax:
             raise ValueError(f"ell={ell} out of range [0, {self.lmax}]")
+        if mul < 0 or mul >= self.mul_list[ell]:
+            raise ValueError(f"mul={mul} out of range [0, {self.mul_list[ell]})")
+        return self._offsets[ell] + mul
 
-        start = self._offsets[ell]
-        end = start + self.mul_list[ell]
-        return self.radial_basis[start:end]
-
-    def to_gridfuncs(self, orbital_selection: Optional[Dict[int, int]] = None) -> List[GridFunc]:
+    def to_gridfuncs(
+        self,
+        orbital_selection: Optional[Dict[int, int]] = None,
+        rdense: float = 100.0,
+    ) -> List[GridFunc]:
         """
-        Convert to list of GridFunc objects.
+        Convert to list of GridFunc objects on uniform linear grids (OpenMX style).
 
         Parameters
         ----------
         orbital_selection : dict, optional
             Orbital selection rule: {L: num_mu}.
             If None, load all orbitals.
+        rdense : float
+            Linear grid density (points per Bohr). Default: 100.0
+            OpenMX default: NumGridR=900 for typical ~9 Bohr cutoff.
 
         Returns
         -------
         List[GridFunc]
-            List of GridFunc objects.
+            List of GridFunc objects on linear grids.
         """
         gridfuncs = []
 
@@ -116,16 +220,28 @@ class BasisLoader:
                 num_mu = self.mul_list[ell]
 
             for mul in range(num_mu):
-                func = self.get_orbital(ell, mul)
-                gf = GridFunc(self.rgd, func, l=ell, rcut=self.radial_cutoff)
+                idx = self._offsets[ell] + mul
+                ni = self.grid_length[idx]
+
+                r_orig = self.radius_grid[idx, :ni]
+                func_orig = self.radius_basis[idx, :ni]
+                rcut = self.cutoff_radii[idx]
+
+                gf = _interpolate_to_linear_grid(r_orig, func_orig, rcut, ell, rdense)
                 gridfuncs.append(gf)
 
         return gridfuncs
 
 
-def load_basis_h5(filepath: Path, orbital_selection: Optional[Dict[int, int]] = None) -> List[GridFunc]:
+def load_basis_h5(
+    filepath: Path,
+    orbital_selection: Optional[Dict[int, int]] = None,
+    rdense: float = 100.0,
+) -> List[GridFunc]:
     """
     Load GridFunc objects from standardized basis.h5 file.
+
+    Interpolates to uniform linear grid (OpenMX style).
 
     Parameters
     ----------
@@ -134,19 +250,23 @@ def load_basis_h5(filepath: Path, orbital_selection: Optional[Dict[int, int]] = 
     orbital_selection : dict, optional
         Orbital selection rule: {L: num_mu}.
         If None, load all orbitals.
+    rdense : float
+        Linear grid density (points per Bohr). Default: 100.0
 
     Returns
     -------
     List[GridFunc]
-        List of GridFunc objects.
+        List of GridFunc objects on linear grids.
     """
     loader = BasisLoader(filepath)
-    return loader.to_gridfuncs(orbital_selection)
+    return loader.to_gridfuncs(orbital_selection, rdense)
 
 
 class AOData_openmx(AOData):
     """
     AOData subclass for OpenMX basis sets loaded from standardized basis.h5.
+
+    Uses uniform linear r-space grids (OpenMX style).
     """
 
     def __init__(
@@ -154,6 +274,7 @@ class AOData_openmx(AOData):
         structure: Structure,
         basis_files: Dict[int, Path],
         orbital_selections: Optional[Dict[int, Dict[int, int]]] = None,
+        rdense: float = 100.0,
     ):
         """
         Initialize AOData from standardized basis.h5 files.
@@ -168,11 +289,15 @@ class AOData_openmx(AOData):
         orbital_selections : dict, optional
             Mapping from atomic_number to orbital selection.
             {atomic_number: {L: num_mu}}
+        rdense : float
+            Linear r-space grid density (points per Bohr). Default: 100.0
+            OpenMX default: NumGridR=900 for typical ~9 Bohr cutoff.
         """
         self.structure = structure
         self.aocode = "openmx"
         self.spinful = False
         self.magnetic = False
+        self.rdense = rdense
 
         self.ls_spc = {}
         self.phirgrids_spc = {}
@@ -195,7 +320,7 @@ class AOData_openmx(AOData):
             if orbital_selections and spc_nu in orbital_selections:
                 orbital_selection = orbital_selections[spc_nu]
 
-            gridfuncs = load_basis_h5(basis_file, orbital_selection)
+            gridfuncs = load_basis_h5(basis_file, orbital_selection, rdense)
 
             self.phirgrids_spc[spc_nu] = gridfuncs
             self.ls_spc[spc_nu] = [gf.l for gf in gridfuncs]

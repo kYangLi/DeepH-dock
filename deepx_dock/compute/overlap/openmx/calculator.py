@@ -1,4 +1,5 @@
 from pathlib import Path
+import warnings
 import numpy as np
 
 from deepx_dock.compute.overlap.openmx.parse_input import parse_openmx_input, openmx_input_to_structure
@@ -15,6 +16,10 @@ from deepx_dock.CONSTANT import (
 
 from HPRO.utils.structure import Structure
 from HPRO.io.deephio import save_mat_deeph
+
+OPENMX_DEFAULT_ECUT = 1800.0
+OPENMX_DEFAULT_KDENSE = 15.0
+OPENMX_DEFAULT_RDENSE = 100.0
 
 
 def build_atom_reorder_mapping(atomic_numbers: list) -> tuple:
@@ -67,7 +72,14 @@ class OpenMXOverlapCalculator:
     """
 
     def __init__(
-        self, openmx_input: Path, basis_dir: Path, raw_basis_dir: Path = None, ecut: float = 50.0, force: bool = False
+        self,
+        openmx_input: Path,
+        basis_dir: Path,
+        raw_basis_dir: Path = None,
+        ecut: float = OPENMX_DEFAULT_ECUT,
+        kdense: float = OPENMX_DEFAULT_KDENSE,
+        rdense: float = OPENMX_DEFAULT_RDENSE,
+        force: bool = False,
     ):
         """
         Initialize calculator.
@@ -81,7 +93,15 @@ class OpenMXOverlapCalculator:
         raw_basis_dir : Path, optional
             Directory containing original PAO files
         ecut : float
-            Energy cutoff for Fourier transform (Hartree)
+            Energy cutoff for Fourier transform (Hartree).
+            Controls k-space coverage: kmax = sqrt(2*Ecut).
+            Default: 1800.0 Ha (OpenMX default: 3600 Ry).
+        kdense : float
+            k-space grid density. grid_nq = kmax * kdense.
+            Default: 15.0 (OpenMX default: NumGridK=900 at kmax=60).
+        rdense : float
+            r-space linear grid density (points per Bohr).
+            Default: 100.0 (OpenMX default: NumGridR=900 for ~9 Bohr cutoff).
         force : bool
             Force re-conversion of PAO files
         """
@@ -89,10 +109,33 @@ class OpenMXOverlapCalculator:
         self.basis_dir = Path(basis_dir)
         self.raw_basis_dir = Path(raw_basis_dir) if raw_basis_dir else None
         self.ecut = ecut
+        self.kdense = kdense
+        self.rdense = rdense
         self.force = force
 
         self.output_dir = self.openmx_input.parent
         self.basis_dir.mkdir(parents=True, exist_ok=True)
+
+        self._validate_grid_params()
+
+    def _validate_grid_params(self) -> None:
+        """Validate grid parameters and warn if k/r point counts mismatch."""
+        kmax = np.sqrt(2 * self.ecut)
+        expected_grid_nq = kmax * self.kdense
+
+        typical_rcut = 9.0
+        expected_grid_nr = typical_rcut * self.rdense
+
+        ratio = expected_grid_nr / expected_grid_nq
+
+        if ratio > 2.0 or ratio < 0.5:
+            warnings.warn(
+                f"Grid size mismatch: expected ~{expected_grid_nr:.0f} r-points "
+                f"vs ~{expected_grid_nq:.0f} k-points (ratio={ratio:.2f}). "
+                f"Consider adjusting kdense/rdense for similar grid sizes. "
+                f"OpenMX uses equal NumGridK and NumGridR (typically 900).",
+                UserWarning,
+            )
 
     def run(self) -> None:
         """Execute the full workflow."""
@@ -170,13 +213,18 @@ class OpenMXOverlapCalculator:
             atomic_positions_is_cart=True,
         )
 
-        aodata = AOData_openmx(structure, basis_files=basis_files, orbital_selections=orbital_selections)
+        aodata = AOData_openmx(
+            structure,
+            basis_files=basis_files,
+            orbital_selections=orbital_selections,
+            rdense=self.rdense,
+        )
 
         return structure, aodata
 
     def _compute_overlap(self, aodata):
         """Compute overlap matrix using HPRO."""
-        return calc_olp(aodata, Ecut=self.ecut)
+        return calc_olp(aodata, Ecut=self.ecut, kdense=self.kdense)
 
     def _remap_overlap(self, overlaps, old_to_new: dict, natoms: int) -> None:
         """
