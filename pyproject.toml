@@ -37,10 +37,9 @@ dependencies = [
     # Misc
     "matplotlib",
     "mendeleev",
-    # Advanced computation
+    # Computation
     "ase",
     "libtetrabz",
-    "mpi4py",
     "hpro",
 ]
 
@@ -84,6 +83,8 @@ docs = [
     "jupytext",
     "docutils",
 ]
+
+mpi = ["mpi4py"]
 
 petsc = [
     "mpi4py",
