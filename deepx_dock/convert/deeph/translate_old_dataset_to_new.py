@@ -12,6 +12,7 @@ from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME, DEEPX_INFO_FILENAME
 from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
 from deepx_dock.CONSTANT import DEEPX_DENSITY_MATRIX_FILENAME, DEEPX_VR_FILENAME
+from deepx_dock.CONSTANT import DEEPX_POSITION_MATRIX_FILENAME
 from deepx_dock.CONSTANT import PERIODIC_TABLE_INDEX_TO_SYMBOL
 from deepx_dock.CONSTANT import PERIODIC_TABLE_SYMBOL_TO_INDEX
 from deepx_dock.misc import get_data_dir_lister, load_poscar_file
@@ -27,6 +28,7 @@ DEEPH_INFO_FILENAME = "info.json"
 DEEPH_HAMILTONIAN_FILENAME = "hamiltonians.h5"
 DEEPH_OVERLAP_FILENAME = "overlaps.h5"
 DEEPH_DENSITY_MATRIX_FILENAME = "density_matrices.h5"
+DEEPH_POSITION_FILENAME = "positions.h5"
 DEEPH_VR_FILENAME = DEEPX_VR_FILENAME
 DEEPH_NECESSARY_FILES = set([
     DEEPH_LAT_FILENAME, DEEPH_ELEMENT_FILENAME, DEEPH_SITE_POS_FILENAME,
@@ -189,11 +191,13 @@ class NewDatasetTranslator:
         new_S_path = new_dir_path / DEEPX_OVERLAP_FILENAME
         new_H_path = new_dir_path / DEEPX_HAMILTONIAN_FILENAME
         new_Rho_path = new_dir_path / DEEPX_DENSITY_MATRIX_FILENAME
+        new_position_path = new_dir_path / DEEPX_POSITION_MATRIX_FILENAME
         new_potential_r_path = new_dir_path / DEEPX_VR_FILENAME
         #
         old_S_path = old_dir_path / DEEPH_OVERLAP_FILENAME
         old_H_path = old_dir_path / DEEPH_HAMILTONIAN_FILENAME
         old_Rho_path = old_dir_path / DEEPH_DENSITY_MATRIX_FILENAME
+        old_position_path = old_dir_path / DEEPH_POSITION_FILENAME
         old_potential_r_path = old_dir_path / DEEPH_VR_FILENAME
         
         #
@@ -222,6 +226,16 @@ class NewDatasetTranslator:
             atom_pairs_order = NewDatasetTranslator._transfer_old_h5_to_new(
                 old_Rho_path,
                 new_Rho_path,
+                isspinful,
+                elem_indices,
+                orbs_save,
+                coords_order_list,
+                atom_pairs_order=atom_pairs_order,
+            )
+        if old_position_path.is_file():
+            NewDatasetTranslator._transfer_old_position_to_new(
+                old_position_path,
+                new_position_path,
                 isspinful,
                 elem_indices,
                 orbs_save,
@@ -288,6 +302,115 @@ class NewDatasetTranslator:
             for key, value in new_h5_data.items():
                 f_new_h5.create_dataset(key, data=value)
         return new_h5_data["atom_pairs"].tolist()
+
+    @staticmethod
+    def _transfer_old_position_to_new(
+        old_h5_path,
+        new_h5_path,
+        isspinful,
+        elem_indices,
+        orbs_save,
+        coords_order_list,
+        atom_pairs_order=None,
+    ):
+        """
+        转换旧版 positions.h5 到新版 position_matrix.h5 格式
+        
+        旧版格式: key = "[Rx, Ry, Rz, atom_i, atom_j, direction]", direction=1,2,3 对应 x,y,z
+        新版格式: 
+            atom_pairs: shape=(n_pairs, 5) - [Rx, Ry, Rz, atom_i, atom_j]
+            entries: shape=(3, total_elements) - 第一维对应 x,y,z 三个方向
+        """
+        transform_index = NewDatasetTranslator._get_transform_index(orbs_save, BASIS_TRANS_OPENMX2WIKI)
+        
+        with h5py.File(old_h5_path, "r") as f_old_h5:
+            old_keys = list(f_old_h5.keys())
+            
+            # 解析所有 key，构建 atom_pair -> [mat_x, mat_y, mat_z] 的映射
+            key_dict = {}
+            for key_str in old_keys:
+                key = json.loads(key_str)
+                atom_pair = tuple(key[:5])  # (Rx, Ry, Rz, atom_i, atom_j)
+                direction = key[5] - 1  # 1,2,3 -> 0,1,2
+                
+                matrix = np.array(f_old_h5[key_str])
+                
+                # 获取变换后的原子索引
+                old_atom1 = int(key[3] - 1)
+                old_atom2 = int(key[4] - 1)
+                atom1 = coords_order_list.index(old_atom1)
+                atom2 = coords_order_list.index(old_atom2)
+                
+                # 应用基组变换
+                transform_index1 = transform_index[PERIODIC_TABLE_INDEX_TO_SYMBOL[int(elem_indices[old_atom1])]]
+                transform_index2 = transform_index[PERIODIC_TABLE_INDEX_TO_SYMBOL[int(elem_indices[old_atom2])]]
+                matrix = NewDatasetTranslator._transform(matrix, transform_index1, transform_index2, isspinful)
+                
+                # 构建新格式的 atom_pair key
+                new_atom_pair = (key[0], key[1], key[2], atom1, atom2)
+                
+                if new_atom_pair not in key_dict:
+                    key_dict[new_atom_pair] = [None, None, None]
+                key_dict[new_atom_pair][direction] = matrix
+            
+            # 确定排序顺序
+            if atom_pairs_order is not None:
+                sorted_atom_pairs = [tuple(p) for p in atom_pairs_order]
+            else:
+                sorted_atom_pairs = sorted(key_dict.keys())
+            
+            n_pairs = len(sorted_atom_pairs)
+            
+            # 获取矩阵形状
+            sample_pair = sorted_atom_pairs[0]
+            sample_matrices = key_dict[sample_pair]
+            for mat in sample_matrices:
+                if mat is not None:
+                    matrix_shape = mat.shape
+                    break
+            
+            # 初始化新格式数据结构
+            # entries shape: (3, n_pairs * norb * norb)
+            norb = matrix_shape[0]
+            new_h5_data = {
+                "atom_pairs": np.zeros((n_pairs, 5), dtype=np.int64),
+                "chunk_boundaries": np.zeros(n_pairs + 1, dtype=np.int64),
+                "chunk_shapes": np.zeros((n_pairs, 2), dtype=np.int64),
+                "entries_list": [None] * n_pairs,
+            }
+            
+            # 填充数据
+            for i, atom_pair in enumerate(sorted_atom_pairs):
+                if atom_pair in key_dict:
+                    matrices = key_dict[atom_pair]
+                    # 确保三个方向都有数据，没有则填充零矩阵
+                    for d in range(3):
+                        if matrices[d] is None:
+                            matrices[d] = np.zeros(matrix_shape, dtype=complex)
+                    # stack 三个方向: shape (3, norb, norb)
+                    stacked = np.stack(matrices, axis=0)
+                    
+                    new_h5_data["atom_pairs"][i, :] = list(atom_pair)
+                    new_h5_data["chunk_shapes"][i] = [norb, norb]
+                    new_h5_data["entries_list"][i] = stacked
+            
+            # 计算 chunk_boundaries
+            new_h5_data["chunk_boundaries"][1:] = np.cumsum(
+                new_h5_data["chunk_shapes"][:, 0] * new_h5_data["chunk_shapes"][:, 1]
+            )
+            
+            # 合并 entries: shape (3, total_elements)
+            # 每个方向的数据按顺序拼接
+            entries_3d = np.concatenate(
+                [e.reshape(3, -1) for e in new_h5_data["entries_list"]], 
+                axis=1
+            )
+            
+            with h5py.File(new_h5_path, "w") as f_new_h5:
+                f_new_h5.create_dataset("atom_pairs", data=new_h5_data["atom_pairs"])
+                f_new_h5.create_dataset("chunk_boundaries", data=new_h5_data["chunk_boundaries"])
+                f_new_h5.create_dataset("chunk_shapes", data=new_h5_data["chunk_shapes"])
+                f_new_h5.create_dataset("entries", data=entries_3d)
 
     @staticmethod
     def _transfer_old_txt_to_new(old_txt_path, new_txt_path, coords_order_list):
@@ -415,11 +538,13 @@ class OldDatasetTranslator:
         new_S_path = old_dir_path / DEEPH_OVERLAP_FILENAME
         new_H_path = old_dir_path / DEEPH_HAMILTONIAN_FILENAME
         new_Rho_path = old_dir_path / DEEPH_DENSITY_MATRIX_FILENAME
+        new_position_path = old_dir_path / DEEPH_POSITION_FILENAME
         new_potential_r_path = old_dir_path / DEEPH_VR_FILENAME
         #
         old_S_path = new_dir_path / DEEPX_OVERLAP_FILENAME
         old_H_path = new_dir_path / DEEPX_HAMILTONIAN_FILENAME
         old_Rho_path = new_dir_path / DEEPX_DENSITY_MATRIX_FILENAME
+        old_position_path = new_dir_path / DEEPX_POSITION_MATRIX_FILENAME
         old_potential_r_path = new_dir_path / DEEPX_VR_FILENAME
         #
         if old_S_path.is_file():
@@ -442,6 +567,14 @@ class OldDatasetTranslator:
             OldDatasetTranslator._transfer_new_h5_to_old(
                 old_Rho_path,
                 new_Rho_path,
+                isspinful,
+                elem_indices,
+                orbs_save,
+            )
+        if old_position_path.is_file():
+            OldDatasetTranslator._transfer_new_position_to_old(
+                old_position_path,
+                new_position_path,
                 isspinful,
                 elem_indices,
                 orbs_save,
@@ -473,3 +606,44 @@ class OldDatasetTranslator:
                 matrix = NewDatasetTranslator._transform(matrix, transform_index1, transform_index2, isspinful)
                 key = f"[{atom_pair[0]}, {atom_pair[1]}, {atom_pair[2]}, {atom1+1}, {atom2+1}]"
                 f_new_h5.create_dataset(key, data=matrix)
+
+    @staticmethod
+    def _transfer_new_position_to_old(
+        old_h5_path,
+        new_h5_path,
+        isspinful,
+        elem_indices,
+        orbs_save,
+    ):
+        """
+        转换新版 position_matrix.h5 到旧版 positions.h5 格式
+        
+        新版格式: entries shape=(3, total_elements)
+        旧版格式: key = "[Rx, Ry, Rz, atom_i, atom_j, direction]"
+        """
+        transform_index = NewDatasetTranslator._get_transform_index(orbs_save, BASIS_TRANS_WIKI2OPENMX)
+        with h5py.File(old_h5_path, "r") as f_old_h5:
+            atom_pairs = np.array(f_old_h5["atom_pairs"][:])
+            chunk_boundaries = np.array(f_old_h5["chunk_boundaries"][:])
+            chunk_shapes = np.array(f_old_h5["chunk_shapes"][:])
+            entries = np.array(f_old_h5["entries"][:])
+        
+        with h5py.File(new_h5_path, "w") as f_new_h5:
+            for i, atom_pair in enumerate(atom_pairs):
+                # entries shape: (3, total_elements), 提取当前 atom_pair 的三个方向
+                norb = chunk_shapes[i, 0]
+                block_size = norb * norb
+                start_idx = chunk_boundaries[i]
+                end_idx = chunk_boundaries[i + 1]
+                matrices_3d = entries[:, start_idx:end_idx]
+                matrices = [matrices_3d[d, :].reshape(norb, norb) for d in range(3)]
+                
+                atom1 = atom_pair[3]
+                atom2 = atom_pair[4]
+                transform_index1 = transform_index[PERIODIC_TABLE_INDEX_TO_SYMBOL[int(elem_indices[atom1])]]
+                transform_index2 = transform_index[PERIODIC_TABLE_INDEX_TO_SYMBOL[int(elem_indices[atom2])]]
+                
+                for direction, matrix in enumerate(matrices, start=1):
+                    matrix = NewDatasetTranslator._transform(matrix, transform_index1, transform_index2, isspinful)
+                    key = f"[{atom_pair[0]}, {atom_pair[1]}, {atom_pair[2]}, {atom1+1}, {atom2+1}, {direction}]"
+                    f_new_h5.create_dataset(key, data=matrix)
