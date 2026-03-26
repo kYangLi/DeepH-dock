@@ -17,7 +17,7 @@ _SUPPORTED_VERSIONS = _get_supported_versions_str()
 
 
 @register(
-    cli_name="patch-aims",
+    cli_name="patch-aims-code",
     cli_help="""
 Apply a patch to FHI-aims source for DeepX warmstart support (periodic mode only).
 

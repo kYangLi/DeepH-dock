@@ -55,7 +55,6 @@ def translate_openmx_to_deeph(
         click.confirm(f"The DeepH data path '{deeph_dir}' already exists. Continue?", abort=True)
     else:
         deeph_dir.mkdir(parents=True, exist_ok=True)
-    #
     from deepx_dock.convert.openmx.translate_openmx_to_deeph import OpenMXDatasetTranslator
 
     translator = OpenMXDatasetTranslator(
@@ -73,7 +72,7 @@ def translate_openmx_to_deeph(
 
 
 @register(
-    cli_name="to-openmx",
+    cli_name="from-deeph",
     cli_help="Inject the DeepH predicted Hamiltonian into OpenMX scfout file.",
     cli_args=[
         click.argument(
@@ -124,7 +123,6 @@ def translate_deeph_to_openmx(
         click.confirm(f"The output data path '{output_dir}' already exists. Continue?", abort=True)
     else:
         output_dir.mkdir(parents=True, exist_ok=True)
-    #
     from deepx_dock.convert.openmx.translate_deeph_to_openmx import DeepHToOpenMXTranslator
 
     translator = DeepHToOpenMXTranslator(
@@ -139,78 +137,48 @@ def translate_deeph_to_openmx(
 
 
 @register(
-    cli_name="convert-basis",
-    cli_help="Convert OpenMX PAO files to standardized HDF5 format",
+    cli_name="species-h5",
+    cli_help="Convert OpenMX PAO+VPS files to species_openmx_{xc}.h5 format",
     cli_args=[
         click.argument("pao_dir", type=click.Path(exists=True)),
-        click.argument("output_dir", type=click.Path()),
-        click.option("--pattern", type=str, default="*.pao", help="File pattern to match PAO files, default: *.pao"),
-        click.option("--force", is_flag=True, help="Force re-conversion even if .h5 exists"),
+        click.argument("vps_dir", type=click.Path(exists=True)),
+        click.argument("output_file", type=click.Path()),
+        click.option("--xc-type", type=str, default="PBE19", help="XC functional type (default: PBE19)"),
     ],
 )
-def convert_basis(pao_dir: str, output_dir: str, pattern: str, force: bool):
+def convert_species(pao_dir: str, vps_dir: str, output_file: str, xc_type: str):
     """
-    Batch convert OpenMX PAO files to standardized HDF5 format.
+    Convert OpenMX PAO and VPS files to species_openmx_{xc}.h5 format.
+
+    Creates a single HDF5 file containing all species data:
+    - Basis functions (from PAO)
+    - Valence density (from PAO)
+    - Pseudopotentials (from VPS)
 
     Example:
-        dock convert openmx convert-basis pao_folder/ basis/
+        dock convert openmx convert-species \\
+            /path/to/DFT_DATA19/PAO \\
+            /path/to/DFT_DATA19/VPS \\
+            species_openmx_pbe.h5
     """
-    from deepx_dock.convert.openmx.basis_convert import convert_pao_to_h5
-    from tqdm import tqdm
+    from deepx_dock.convert.openmx.species_convert import convert_to_species_h5
 
     pao_dir = Path(pao_dir)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    pao_files = sorted(pao_dir.glob(pattern))
-
-    if not pao_files:
-        click.echo(f"[error] No PAO files found matching pattern '{pattern}' in {pao_dir}")
-        return
-
-    click.echo(f"Found {len(pao_files)} PAO file(s) to convert")
-
-    converted = 0
-    skipped = 0
-
-    for pao_file in tqdm(pao_files, desc="Converting"):
-        h5_file = output_dir / f"{pao_file.stem}.h5"
-
-        if h5_file.exists() and not force:
-            skipped += 1
-            continue
-
-        try:
-            convert_pao_to_h5(pao_file, h5_file)
-            converted += 1
-        except Exception as e:
-            click.echo(f"\n[error] Failed to convert {pao_file.name}: {e}")
-
-    click.echo(f"\n[done] Converted: {converted}, Skipped: {skipped}")
-    click.echo(f"Output directory: {output_dir}")
-
-
-@register(
-    cli_name="convert-single",
-    cli_help="Convert a single OpenMX PAO file to HDF5",
-    cli_args=[
-        click.argument("pao_file", type=click.Path(exists=True)),
-        click.argument("output_file", type=click.Path()),
-    ],
-)
-def convert_single(pao_file: str, output_file: str):
-    """
-    Convert a single OpenMX PAO file to standardized HDF5 format.
-
-    Example:
-        dock convert openmx convert-single Fe6.0H.pao basis/Fe6.0H.h5
-    """
-    from deepx_dock.convert.openmx.basis_convert import convert_pao_to_h5
-
-    pao_file = Path(pao_file)
+    vps_dir = Path(vps_dir)
     output_file = Path(output_file)
-    output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    click.echo(f"Converting: {pao_file.name}")
-    convert_pao_to_h5(pao_file, output_file)
-    click.echo(f"[done] Saved to: {output_file}")
+    xc_short = xc_type.replace("19", "")
+    click.echo("=" * 60)
+    click.echo(f"[info] Converting OpenMX PAO+VPS to species_openmx_{xc_short.lower()}.h5")
+    click.echo("=" * 60)
+    click.echo(f"[info] PAO directory: {pao_dir}")
+    click.echo(f"[info] VPS directory: {vps_dir}")
+    click.echo(f"[info] XC type: {xc_type}")
+    click.echo(f"[info] Output file: {output_file}")
+    click.echo()
+
+    convert_to_species_h5(pao_dir, vps_dir, output_file, xc_type)
+
+    click.echo("=" * 60)
+    click.echo("[done] Species file generated successfully!")
+    click.echo("=" * 60)

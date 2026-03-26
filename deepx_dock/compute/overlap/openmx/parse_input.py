@@ -21,12 +21,21 @@ def parse_openmx_input(filepath: Path) -> dict:
             'species_definition': dict,
             'atoms': list,
             'lattice': np.ndarray,
-            'coordinate_unit': str
+            'coordinate_unit': str,
+            'spin_orbit_coupling': bool,
+            'spin_polarization': str
         }
     """
     filepath = Path(filepath)
 
-    data = {"species_definition": {}, "atoms": [], "lattice": None, "coordinate_unit": "Ang"}
+    data = {
+        "species_definition": {},
+        "atoms": [],
+        "lattice": None,
+        "coordinate_unit": "Ang",
+        "spin_orbit_coupling": False,
+        "spin_polarization": "Off",
+    }
 
     with open(filepath, "r") as f:
         lines = f.readlines()
@@ -80,6 +89,20 @@ def parse_openmx_input(filepath: Path) -> dict:
                     lattice.append([float(parts[0]), float(parts[1]), float(parts[2])])
                 i += 1
             data["lattice"] = np.array(lattice, dtype=np.float64)
+
+        elif "scf.SpinOrbit.Coupling" in line:
+            parts = line.split()
+            for part in parts:
+                if part.lower() in ["on", "yes", "true"]:
+                    data["spin_orbit_coupling"] = True
+                    break
+
+        elif "scf.SpinPolarization" in line:
+            parts = line.split()
+            for part in parts:
+                if part in ["On", "NC"]:
+                    data["spin_polarization"] = part
+                    break
 
         i += 1
 

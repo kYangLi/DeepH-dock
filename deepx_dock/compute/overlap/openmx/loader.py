@@ -342,3 +342,96 @@ class AOData_openmx(AOData):
         self.norbfull_spc = norbfull_spc
         self.phiQlist_spc = None
         self.phiQEcut = None
+
+
+class AOData_from_species(AOData):
+    """
+    AOData subclass using unified species_{source}_{xc}.h5 format.
+
+    Loads basis functions from a single species file instead of
+    individual basis.h5 files per element.
+    """
+
+    def __init__(
+        self,
+        structure: Structure,
+        species_file: Path,
+        species_names: Dict[int, str],
+        orbital_selections: Optional[Dict[int, Dict[int, int]]] = None,
+        rdense: float = 100.0,
+        spinful: bool = False,
+    ):
+        """
+        Initialize AOData from unified species file.
+
+        Parameters
+        ----------
+        structure : Structure
+            HPRO Structure object.
+        species_file : Path
+            Path to species file (e.g., species_openmx_pbe.h5).
+        species_names : dict
+            Mapping from atomic_number to species name.
+            {atomic_number: "Mo7.0"}
+        orbital_selections : dict, optional
+            Mapping from atomic_number to orbital selection.
+            {atomic_number: {L: num_mu}}
+        rdense : float
+            Linear r-space grid density (points per Bohr). Default: 100.0
+        spinful : bool
+            Whether to include spin degree of freedom. Default: False.
+            Set True if SOC or spin polarization is enabled.
+        """
+        from deepx_dock.convert.openmx.species_loader import SpeciesLoader
+
+        self.structure = structure
+        self.aocode = "openmx"
+        self.spinful = spinful
+        self.magnetic = False
+        self.rdense = rdense
+
+        loader = SpeciesLoader(species_file)
+
+        self.ls_spc = {}
+        self.phirgrids_spc = {}
+        self.nradial_spc = {}
+        self.cutoffs = {}
+
+        processed_spc = set()
+
+        for spc_nu in structure.atomic_numbers:
+            if spc_nu in processed_spc:
+                continue
+            processed_spc.add(spc_nu)
+
+            species_name = species_names.get(spc_nu)
+            if species_name is None:
+                spc_na = atom_number2name([spc_nu])[0]
+                raise ValueError(f"No species name provided for element {spc_na} (Z={spc_nu})")
+
+            orbital_selection = None
+            if orbital_selections and spc_nu in orbital_selections:
+                orbital_selection = orbital_selections[spc_nu]
+
+            gridfuncs = loader.basis_to_gridfuncs(species_name, orbital_selection, rdense)
+
+            self.phirgrids_spc[spc_nu] = gridfuncs
+            self.ls_spc[spc_nu] = [gf.l for gf in gridfuncs]
+            self.nradial_spc[spc_nu] = len(gridfuncs)
+
+            spc_na = atom_number2name([spc_nu])[0]
+            self.cutoffs[spc_na] = max(gf.rcut for gf in gridfuncs)
+
+        orbslices_spc = {}
+        norbfull_spc = {}
+        for spc, orbital_types in self.ls_spc.items():
+            orbital_slices = [0]
+            for angmom in orbital_types:
+                orbital_slices.append(orbital_slices[-1] + 2 * angmom + 1)
+            orbslices_spc[spc] = orbital_slices
+            norbfull_spc[spc] = orbital_slices[-1]
+
+        self.orbslices_spc = orbslices_spc
+        self.norbfull_spc = norbfull_spc
+        self.phiQlist_spc = None
+        self.phiQEcut = None

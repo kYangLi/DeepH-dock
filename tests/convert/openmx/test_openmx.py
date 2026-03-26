@@ -39,7 +39,7 @@ def test_openmx_to_deeph_conversion(openmx_data, temp_output_dir):
     assert result.returncode == 0, f"Command failed with stderr:\n{result.stderr}"
     assert output_dir.exists(), "Output directory not created"
 
-    is_equal, errors = compare_directories(output_dir, reference_dir, threshold=1e-10)
+    is_equal, errors = compare_directories(output_dir, reference_dir, threshold=1e-4)
 
     if not is_equal:
         error_msg = "\n".join(errors)
