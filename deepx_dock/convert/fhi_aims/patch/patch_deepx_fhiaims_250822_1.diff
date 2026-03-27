@@ -1,0 +1,2001 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -142,6 +142,8 @@
+ option(USE_iPI "Whether support the i-Pi Python wrapper" ON)
+ # HDF5
+ option(USE_HDF5 "Whether to compile with HDF5 support" OFF)
++# DeepH-JAX (DeepX) reverse interface
++option(USE_DEEPH_INTERFACE "Whether to compile with DeepX reverse loading interface" ON)
+ # TREXIO
+ option(USE_TREXIO "Whether to compile with TREXIO support" OFF)
+ #CC4aims
+--- /dev/null
++++ b/initial_cache.cmake
+@@ -0,0 +1,58 @@
++# Initial cache for FHI-aims with DeepH-JAX (DeepX) reverse interface enabled
++# Usage:
++#   cmake -S . -B build_deeph -C initial_cache.cmake
++#
++# Customize the paths/compilers below to your machine before first configure.
++
++# -------------------- Compilers --------------------
++# Intel oneAPI MPI wrappers (recommended for MKL + ScaLAPACK)
++set(CMAKE_Fortran_COMPILER "mpiifx" CACHE STRING "" FORCE)
++set(CMAKE_C_COMPILER "mpiicx" CACHE STRING "" FORCE)
++set(CMAKE_CXX_COMPILER "icpx" CACHE STRING "" FORCE)
++
++# -------------------- Flags --------------------
++set(CMAKE_Fortran_FLAGS "-O3 -ip -fp-model precise" CACHE STRING "" FORCE)
++set(Fortran_MIN_FLAGS "-O0 -fp-model precise" CACHE STRING "" FORCE)
++set(CMAKE_C_FLAGS "-O3 -ip -fp-model precise -std=gnu99" CACHE STRING "" FORCE)
++set(CMAKE_CXX_FLAGS "-O3 -ip -fp-model precise" CACHE STRING "" FORCE)
++
++# -------------------- External include/lib paths --------------------
++# HDF5 is required at runtime for DeepX reverse loading.
++# Keep HDF5_HOME in environment, e.g. export HDF5_HOME=/path/to/hdf5
++set(INC_PATHS "$ENV{HDF5_HOME}/include" CACHE STRING "" FORCE)
++
++# MKL + HDF5 library paths
++set(LIB_PATHS "/path/to/mkl;$ENV{HDF5_HOME}/lib" CACHE STRING "" FORCE)
++
++# Core link libraries (order matters)
++set(LIBS "mkl_intel_lp64 mkl_sequential mkl_core mkl_blacs_intelmpi_lp64 mkl_scalapack_lp64" CACHE STRING "" FORCE)
++#set(LIBS "mkl_intel_lp64 mkl_sequential mkl_core mkl_blacs_intelmpi_lp64 mkl_scalapack_lp64 hdf5_fortran hdf5_hl_fortran hdf5_hl hdf5 z" CACHE STRING "" FORCE)
++
++# -------------------- Feature switches --------------------
++set(USE_MPI ON CACHE BOOL "" FORCE)
++set(USE_SCALAPACK ON CACHE BOOL "" FORCE)
++set(USE_LIBXC ON CACHE BOOL "" FORCE)
++set(USE_HDF5 ON CACHE BOOL "" FORCE)
++set(USE_RLSY ON CACHE BOOL "" FORCE)
++
++# Build as shared lib
++#set(BUILD_SHARED_LIBS ON CACHE STRING "")
++
++# Optional: ELPA kernel selection (GENERIC/AVX/AVX2/AVX512)
++set(ELPA2_KERNEL "" CACHE STRING "Change to AVX/AVX2/AVX512 on Intel CPUs" FORCE)
++
++# Optional extras
++#set(USE_COOP ON CACHE BOOL "" FORCE)
++
++# -------------------- DeepX reverse interface integration --------------------
++# User settings (only these two)
++set(DEEPH_HDF5_ROOT "/path/to/hdf5" CACHE PATH "Path to HDF5 installation root" FORCE)
++set(DEEPH_ENABLE_HDF5_FOR_INTERFACE ON CACHE BOOL "Enable DeepX interface with HDF5 C API" FORCE)
++
++# Map user settings to existing CMake options/variables.
++if (DEEPH_ENABLE_HDF5_FOR_INTERFACE)
++	set(USE_DEEPH_INTERFACE ON CACHE BOOL "" FORCE)
++	set(HDF5_ROOT "${DEEPH_HDF5_ROOT}" CACHE PATH "" FORCE)
++else()
++	set(USE_DEEPH_INTERFACE OFF CACHE BOOL "" FORCE)
++endif()
+
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -195,6 +195,24 @@
+   target_sources(aims5 PRIVATE hdf5_stubs.f90)
+ endif()
+ 
++if (USE_DEEPH_INTERFACE)
++  target_sources(aims5 PRIVATE deeph_interface/include/rs_mx_trans.f90)
++  target_sources(aims5 PRIVATE deeph_interface/src/rs_mx_trans.c)
++
++  # DeepX always relies on the HDF5 C API, independent from aims USE_HDF5.
++  find_package(HDF5 REQUIRED COMPONENTS C)
++  target_compile_definitions(aims5 PRIVATE DEEPH_WITH_HDF5)
++
++  if (TARGET HDF5::HDF5)
++    target_link_libraries(aims PRIVATE HDF5::HDF5)
++  elseif(TARGET HDF5::C)
++    target_link_libraries(aims PRIVATE HDF5::C)
++  else()
++    target_include_directories(aims5 PRIVATE ${HDF5_C_INCLUDE_DIRS})
++    target_link_libraries(aims PRIVATE ${HDF5_C_LIBRARIES})
++  endif()
++endif()
++
+ if (USE_TREXIO)
+   target_sources(aims5 PRIVATE trexio_integrals.f90)
+   target_sources(aims5 PRIVATE trexio_integrals.f90)
+--- a/src/runtime_choices.f90
++++ b/src/runtime_choices.f90
+@@ -1286,6 +1286,8 @@
+       logical :: restart_exx_write
+       logical :: restart_exx_read
+       logical :: restart_exx_3c_int
++      ! === DeepX warmstart ===
++      logical :: use_deepx_warmstart
+       ! Igor, to restart RPA
+       logical :: restart_rpa_file_exists
+       character*40 :: restart_rpa_read_file
+@@ -3028,10 +3030,12 @@
+          restart_read  = .false.
+          restart_save_iterations = 0
+          use_restart_save_iterations = .false.
+-         restart_exx_write = .false.
+-         restart_exx_read = .false.
+-         restart_exx_3c_int = .false.
+-         restart_rpa_file_exists = .false.
++restart_exx_write = .false.
++          restart_exx_read = .false.
++          restart_exx_3c_int = .false.
++          ! DeepX/DeepH warmstart
++          use_deepx_warmstart = .false.
++          restart_rpa_file_exists = .false.
+          restart_rpa_read_file = 'aims_restart_rpa_information.dat'
+          restart_rpa_write_file='aims_restart_rpa_information.dat'
+          restart_rpa_write = .false.
+--- a/src/read_control.f90
++++ b/src/read_control.f90
+@@ -8286,10 +8286,17 @@
+                write(info_str,'(2X,2A)') '| This file does not exist, ', &
+                      'will create it after the first complete scf cycle.'
+                restart_read = .false.
+-            end if
+-            call localorb_info(info_str,use_unit,'(A)')
++             end if
++             call localorb_info(info_str,use_unit,'(A)')
+ 
+-         case('restart_read_only')
++          case('use_deepx_warmstart')
++             read(inputline,*,end=88,err=99) desc_str, use_deepx_warmstart
++             if (use_deepx_warmstart) then
++                write(info_str,'(2X,A)') 'DeepH-JAX (DeepX) warmstart requested. Will search for ./deepx_warm or ./deeph_warm.'
++                call localorb_info(info_str,use_unit,'(A)')
++             end if
++
++          case('restart_read_only')
+             read(inputline,*,end=88,err=99) desc_str, restart_read_file
+             keep_restart_info  = .true.
+             restart_read       = .true.
+--- a/src/dimensions.f90
++++ b/src/dimensions.f90
+@@ -2932,6 +2932,7 @@
+                      (desc_str.eq."hessian_to_restart_geometry").or. &
+                      (desc_str.eq."distributed_hessian").or. &
+                      (desc_str.eq."restart_eigenvectors_periodic").or. &
++                     (desc_str.eq."use_deepx_warmstart").or. &
+                      (desc_str.eq."orthonormalize_eigenvectors") .or. &
+                      (desc_str.eq."auxil_basis").or. &
+                      (desc_str.eq."final_forces_cleaned") .or. &
+--- a/src/Makefile.backend
++++ b/src/Makefile.backend
+@@ -32,6 +32,7 @@
+ USE_C_FILES = yes
+ USE_LIBXC ?= ${USE_C_FILES}
+ USE_CXX_FILES = yes
++USE_DEEPH_INTERFACE ?= yes
+ 
+ #************************************************************************
+ #
+@@ -1820,6 +1821,22 @@
+ 
+ MODULES:=$(addprefix $(OBJDIR)/,$(MODULES_U))
+ 
++ifeq ($(strip $(USE_DEEPH_INTERFACE)),yes)
++  # DeepX interface needs the HDF5 C API regardless of aims USE_HDF5.
++  DEEPH_HDF5_CFLAGS ?=
++  DEEPH_HDF5_LIBS ?= -lhdf5
++  ifneq ($(strip $(HDF5_HOME)),)
++    DEEPH_HDF5_CFLAGS += -I$(HDF5_HOME)/include
++    DEEPH_HDF5_LIBS := -L$(HDF5_HOME)/lib $(DEEPH_HDF5_LIBS)
++  endif
++
++  CFLAGS += $(DEEPH_HDF5_CFLAGS)
++  CFLAGS += -DDEEPH_WITH_HDF5
++  LDFLAGS += $(DEEPH_HDF5_LIBS)
++
++  MODULES += $(OBJDIR)/deeph_interface/include/rs_mx_trans.o
++endif
++
+ 
+ # CFLAGS was once called CCFLAGS in some parts
+ CFLAGS += $(CCFLAGS)
+@@ -1833,6 +1850,10 @@
+           $(OBJDIR)/change_directory_c.o \
+           $(OBJDIR)/unlimit_stack.o
+ 
++ifeq ($(strip $(USE_DEEPH_INTERFACE)),yes)
++  C_FILES += $(OBJDIR)/deeph_interface/src/rs_mx_trans.o
++endif
++
+ 
+ #C Files for ELPA SSE and AVX kernels, if _not_ pre-installed ELPA library is used
+ MODULES += $(OBJDIR)/elpa/elpa1_auxiliary_stub.o
+@@ -2872,6 +2893,10 @@
+     neo/src/*.f90\
+ )
+ 
++ifeq ($(strip $(USE_DEEPH_INTERFACE)),yes)
++  ALL_SOURCES += $(wildcard deeph_interface/include/*.f90 deeph_interface/src/*.c)
++endif
++
+ ######################################
+ 
+ # Do not generate dependencies for:
+--- a/src/Makefile.hdf5
++++ b/src/Makefile.hdf5
+@@ -194,7 +194,9 @@
+ #
+   include Makefile.backend
+ # Set the path to yout HDF5 library
+-# Should already be a environment variable
++# Should already be a environment variable 
++
++USE_DEEPH_INTERFACE = yes
+ 
+ # HDF5_HOME=/usr/bin
+ # HDF5_HOME=$(HDF5_BASE)
+@@ -203,6 +205,9 @@
+ HDF5_FLAG= -L $(HDF5_HOME)/lib -I $(HDF5_HOME)/include -lhdf5_fortran -lhdf5hl_fortran -lhdf5
+ #-Wl,-rpath -Wl,$(HDF5_HOME)/lib 
+ 
++CFLAGS += -I$(HDF5_HOME)/include
++CFLAGS += -DDEEPH_WITH_HDF5
++
+ # HDF5 Settings for LRZ Cluster
+ # HDF5_FLAG=-Wl, -static -L/lrz/sys/libraries/hdf5/1.8.14/impi_hybrid/lib -lhdf5hl_fortran -lhdf5_fortran -lhdf5 -Wl,-dy
+ 
+--- a/src/scf_solver.f90
++++ b/src/scf_solver.f90
+@@ -250,11 +250,19 @@
+       !use xc !KRB - testing for eed, remove later, uncomment for debug
+       ! NB and KRB, Debug infrastructure for local hybrids while in development.
+       ! Spread across evaluate_xc.f90, xc.f90, scf_solver.f90, integrate_xc_energy.f90
+-      use scf_convergence_tracker
++       use scf_convergence_tracker
+ 
+-      use warnings
++       use warnings
+ 
+-      implicit none
++       ! ================ DeepH-JAX (DeepX) restart interface ======================
++       use rs_mx_trans_interface, only: deeph_begin_scf_cycle, deeph_prepare_pre_scf_alignment, &
++            deeph_should_force_density_hotstart, deeph_finalize_hotstart_nomix, &
++          deeph_prepare_iteration_hamiltonian, deeph_should_skip_hamiltonian_updates, deeph_maybe_log_preks_fingerprint
++       use mpi_tasks
++       use basis
++       ! ===============================================================
++
++       implicit none
+ 
+ !  INTERFACES
+       interface
+@@ -579,7 +587,11 @@
+      end if
+      Gnonmf_forces_on = .false.
+      if (restart_zero_iteration) mbd_first_step = .false.
+-     !SK: Switch-off kinetic density calculation here
++
++      ! DeepX: begin SCF cycle
++      call deeph_begin_scf_cycle()
++
++      !SK: Switch-off kinetic density calculation here
+      !SK: kinetic_density is now calculated in get_free_atoms et al.
+      if (use_meta_gga .and. .false.) then
+           write(info_str,'(2X,A)') ''
+@@ -772,6 +784,10 @@
+      info_str = "Available memory before start of SCF loop"
+      call show_free(info_str)
+ 
++     ! DeepX: prepare pre-SCF alignment
++     call deeph_prepare_pre_scf_alignment(hamiltonian)
++     ! =
++
+ !===============================================================================
+ !=                          BEGIN SELF-CONSISTENCY LOOP                        =
+ !===============================================================================
+@@ -1015,8 +1031,14 @@
+            end do
+         end if
+ 
+-        ! NO mixing at all for restarting information - need pure information.
+-        if (restart_zero_iteration) then
++        ! ======= DeepX: NO mixing at all for restarting information - need pure information.
++        if (restart_zero_iteration .or. deeph_should_force_density_hotstart()) then
++          if (deeph_should_force_density_hotstart()) then
++            write(info_str,'(2X,A)') 'DeepX restart: applying one-shot no-mix density update in this iteration.'
++            call localorb_info(info_str,use_unit,'(A)', OL_norm)
++          end if
++          ! =============================================================================
++
+           if (n_spin .eq. 1) then
+             i_spin = 1
+             rho(i_spin,:) = rho(i_spin,:) + delta_rho_KS(:,i_spin)
+@@ -1044,10 +1066,13 @@
+                 kinetic_density(1,:) = kinetic_density(1,:) + 0.5d0*(delta_kinetic_density(:,1)+delta_kinetic_density(:,2))
+                 kinetic_density(2,:) = kinetic_density(2,:) + 0.5d0*(delta_kinetic_density(:,1)-delta_kinetic_density(:,2))
+               end if
+-            end if
+-          end if
++end if
++           end if
++
++          ! DeepH
++          call deeph_finalize_hotstart_nomix()
+ 
+-        else if (mixer.eq.MIX_LINEAR) then
++         else if (mixer.eq.MIX_LINEAR) then
+           ! linear mixing
+           call linear_mix_p1(partition_tab, hartree_partition_tab, rho, &
+                              rho_gradient,kinetic_density)
+@@ -1090,7 +1115,7 @@
+           call execute_broyden_mixing(number_of_loops, partition_tab, &
+                                       hartree_partition_tab, rho, rho_gradient, kinetic_density)
+         end if
+-        
++
+         info_str = "Available memory per node after mixing"
+         call show_free(info_str)
+ 
+@@ -1209,6 +1234,8 @@
+ 
+ !------------------- Compute REAL SPACE Hamiltonian Matrix ------------------->>
+ 
++        call deeph_prepare_iteration_hamiltonian(hamiltonian)
++
+         ! Construct the REAL SPACE Hamiltonian matrix via the batch integration
+         ! scheme. A complete description including illustrations can be found in
+         ! Huhn et al., Computer Physics Communications 254 (2020) 107314,
+@@ -1280,6 +1307,8 @@
+ 
+         call get_timestamps(time_intg, clock_time_intg)
+ 
++        if (.not. deeph_should_skip_hamiltonian_updates()) then
++
+         if(use_local_index .and. (.not.use_scalapack_q4c)) then
+           if(use_load_balancing) then
+             ! If load balancing is in effect, there already exists a batch
+@@ -1395,6 +1424,12 @@
+ 
+           end if
+         end if
++
++        else
++          write(info_str,'(2X,A)') 'DeepX restart: injected Hamiltonian active; skipping this-iteration real-space integration.'
++          call localorb_info(info_str,use_unit,'(A)', OL_norm)
++        end if
++
+         call get_times(time_intg, clock_time_intg, &
+         &              tot_time_intg, tot_clock_time_intg)
+ 
+@@ -1420,7 +1455,7 @@
+         ! mostly likely to be called for both periodic and non-periodic
+         ! calculations.
+ 
+-        if (use_hartree_fock) then !.and. flag_xc_pre < 0) then
++        if ((.not. deeph_should_skip_hamiltonian_updates()) .and. use_hartree_fock) then !.and. flag_xc_pre < 0) then
+           call get_timestamps(time_fock, clock_time_fock)
+ 
+           ! FK: In general, the EXX forces are switched on when the force
+@@ -1515,7 +1550,7 @@
+         ! Kohn-Sham eigenvalue problem.  The subroutine that performs the
+         ! heavy lifting in this section is advance_KS_solution().
+ 
+-        if (use_embedding_pp) then
++        if ((.not. deeph_should_skip_hamiltonian_updates()) .and. use_embedding_pp) then
+             call get_timestamps(time_embedding, clock_time_embedding)
+             call add_nonlocal_pot(hamiltonian)
+             call get_times(time_embedding, clock_time_embedding, &
+@@ -1623,12 +1658,14 @@
+            end if
+         end if
+ 
+-        if (use_friction.or.output_rs_matrices.or.use_superconduct) then
+-          call store_hamiltonian()
+-          if (use_scalapack) then
+-            call save_hamiltonian_scalapack()
+-          endif
+-      endif
++!if (use_friction.or.output_rs_matrices.or.use_superconduct) then
++        call store_hamiltonian()
++        if (use_scalapack) then
++          call save_hamiltonian_scalapack()
++        endif
++!endif
++
++        call deeph_maybe_log_preks_fingerprint(hamiltonian)
+ 
+         ! Now set first_iteration to false
+         first_iteration = .false.
+@@ -1658,9 +1695,15 @@
+ 
+         if(use_periodic_hf) then !.and. flag_xc_pre < 0)then
+            ! Make sure occ_numbers_save is always defined
+-           if(restart_zero_iteration) then
+-              occ_numbers_save = occ_numbers
++           ! ====================== DeepX: occ_num save ==============================
++          if (restart_zero_iteration .or. deeph_should_force_density_hotstart()) then
++            if (deeph_should_force_density_hotstart()) then
++              write(info_str,'(2X,A)') 'DeepX restart: first-iteration density hotstart (no Pulay/Broyden mixing history used).'
++              call localorb_info(info_str,use_unit,'(A)', OL_norm)
++            end if
++               occ_numbers_save = occ_numbers
+            end if
++           ! ======================================================================
+ 
+            ! For evaluations of the total energy only (without SCF) for
+            ! non-equilibrium density, the Fock energy must be evaluated here
+--- /dev/null
++++ b/src/deeph_interface/include/rs_mx_trans.f90
+@@ -0,0 +1,518 @@
++module rs_mx_trans_interface
++  use iso_c_binding, only: c_char, c_int, c_double, c_null_char
++  use localorb_io, only: localorb_info, use_unit, OL_norm
++  use dimensions, only: n_atoms, n_basis, n_basis_fns, n_spin, n_hamiltonian_matrix_size
++  use pbc_lists, only: n_cells_in_hamiltonian, cell_index, index_hamiltonian, column_index_hamiltonian, &
++                       kweight_occs, de_kweight_occs
++  use basis, only: basis_fn, basis_atom, basisfn_n, basis_l, basis_m, basisfn_type
++  use species_data, only: species_z, l_shell_max
++  use geometry, only: species
++  use runtime_choices
++  use physics
++  use mixing
++  use grids
++  use mpi_tasks, only: myid, aims_stop
++  use timing, only: number_of_loops
++  implicit none
++  private
++
++  public :: deeph_try_load_hamiltonian
++  public :: deeph_should_skip_first_integration
++  public :: deeph_begin_scf_cycle
++  public :: deeph_prepare_pre_scf_alignment
++  public :: deeph_prepare_iteration_hamiltonian
++  public :: deeph_should_skip_hamiltonian_updates
++  public :: deeph_maybe_inject_first_iteration
++  public :: deeph_maybe_log_preks_fingerprint
++  public :: deeph_should_force_density_hotstart
++  public :: deeph_finalize_hotstart_nomix
++
++  interface
++    function deeph_load_and_map_c(deeph_dir, n_atoms_in, n_basis_in, n_spin_in, n_cells_in, n_ham_size_in, &
++      cell_index_in, idx_start_in, idx_end_in, col_index_in, basis_fn_in, basis_atom_in, basisfn_n_in, basis_l_in, basis_m_in, basisfn_type_in, atom_z_in, &
++      ham_out) bind(C, name="deeph_load_and_map_c") result(ierr)
++      import :: c_char, c_int, c_double
++      character(c_char), dimension(*), intent(in) :: deeph_dir
++      integer(c_int), value :: n_atoms_in, n_basis_in, n_spin_in, n_cells_in, n_ham_size_in
++      integer(c_int), dimension(*), intent(in) :: cell_index_in
++      integer(c_int), dimension(*), intent(in) :: idx_start_in
++      integer(c_int), dimension(*), intent(in) :: idx_end_in
++      integer(c_int), dimension(*), intent(in) :: col_index_in
++      integer(c_int), dimension(*), intent(in) :: basis_fn_in
++      integer(c_int), dimension(*), intent(in) :: basis_atom_in
++      integer(c_int), dimension(*), intent(in) :: basisfn_n_in
++      integer(c_int), dimension(*), intent(in) :: basis_l_in
++      integer(c_int), dimension(*), intent(in) :: basis_m_in
++      integer(c_int), dimension(*), intent(in) :: basisfn_type_in
++      integer(c_int), dimension(*), intent(in) :: atom_z_in
++      real(c_double), dimension(*), intent(out) :: ham_out
++      integer(c_int) :: ierr
++    end function deeph_load_and_map_c
++
++    subroutine deeph_state_begin_scf_cycle_c() bind(C, name='deeph_state_begin_scf_cycle_c')
++    end subroutine deeph_state_begin_scf_cycle_c
++
++    function deeph_state_get_restart_used_c() bind(C, name='deeph_state_get_restart_used_c') result(flag)
++      import :: c_int
++      integer(c_int) :: flag
++    end function deeph_state_get_restart_used_c
++
++    function deeph_state_get_injected_this_iteration_c() bind(C, name='deeph_state_get_injected_this_iteration_c') result(flag)
++      import :: c_int
++      integer(c_int) :: flag
++    end function deeph_state_get_injected_this_iteration_c
++
++    subroutine deeph_state_set_injected_this_iteration_c(flag) bind(C, name='deeph_state_set_injected_this_iteration_c')
++      import :: c_int
++      integer(c_int), value :: flag
++    end subroutine deeph_state_set_injected_this_iteration_c
++
++    function deeph_state_get_force_density_hotstart_c() bind(C, name='deeph_state_get_force_density_hotstart_c') result(flag)
++      import :: c_int
++      integer(c_int) :: flag
++    end function deeph_state_get_force_density_hotstart_c
++
++    subroutine deeph_state_set_force_density_hotstart_c(flag) bind(C, name='deeph_state_set_force_density_hotstart_c')
++      import :: c_int
++      integer(c_int), value :: flag
++    end subroutine deeph_state_set_force_density_hotstart_c
++
++    function deeph_try_load_autodetect_c(use_local_index_in, n_atoms_in, n_basis_in, n_spin_in, n_cells_in, n_ham_size_in, &
++      cell_index_in, idx_start_in, idx_end_in, col_index_in, basis_fn_in, basis_atom_in, basisfn_n_in, basis_l_in, basis_m_in, basisfn_type_in, atom_z_in, &
++      ham_out) bind(C, name='deeph_try_load_autodetect_c') result(ierr)
++      import :: c_int, c_double
++      integer(c_int), value :: use_local_index_in
++      integer(c_int), value :: n_atoms_in, n_basis_in, n_spin_in, n_cells_in, n_ham_size_in
++      integer(c_int), dimension(*), intent(in) :: cell_index_in
++      integer(c_int), dimension(*), intent(in) :: idx_start_in
++      integer(c_int), dimension(*), intent(in) :: idx_end_in
++      integer(c_int), dimension(*), intent(in) :: col_index_in
++      integer(c_int), dimension(*), intent(in) :: basis_fn_in
++      integer(c_int), dimension(*), intent(in) :: basis_atom_in
++      integer(c_int), dimension(*), intent(in) :: basisfn_n_in
++      integer(c_int), dimension(*), intent(in) :: basis_l_in
++      integer(c_int), dimension(*), intent(in) :: basis_m_in
++      integer(c_int), dimension(*), intent(in) :: basisfn_type_in
++      integer(c_int), dimension(*), intent(in) :: atom_z_in
++      real(c_double), dimension(*), intent(out) :: ham_out
++      integer(c_int) :: ierr
++    end function deeph_try_load_autodetect_c
++
++    subroutine deeph_log_hamiltonian_fingerprint_c(ham_in, n_ham_size_in, n_spin_in, stage_in, myid_in) bind(C, name='deeph_log_hamiltonian_fingerprint_c')
++      import :: c_char, c_int, c_double
++      real(c_double), dimension(*), intent(in) :: ham_in
++      integer(c_int), value :: n_ham_size_in, n_spin_in, myid_in
++      character(c_char), dimension(*), intent(in) :: stage_in
++    end subroutine deeph_log_hamiltonian_fingerprint_c
++
++    subroutine deeph_dump_hamiltonian_c(ham_in, n_ham_size_in, n_spin_in, filename_in, myid_in) bind(C, name='deeph_dump_hamiltonian_c')
++      import :: c_char, c_int, c_double
++      real(c_double), dimension(*), intent(in) :: ham_in
++      integer(c_int), value :: n_ham_size_in, n_spin_in, myid_in
++      character(c_char), dimension(*), intent(in) :: filename_in
++    end subroutine deeph_dump_hamiltonian_c
++  end interface
++
++  real*8, parameter :: deeph_fingerprint_tol = 1.0d-9
++  logical, save :: deeph_fingerprint_ref_valid = .false.
++  real*8, allocatable, save :: deeph_fingerprint_ref_norm2(:)
++  real*8, allocatable, save :: deeph_fingerprint_ref_maxabs(:)
++  logical, save :: deeph_injection_timing_valid = .false.
++  real*8, save :: deeph_injection_cpu_elapsed = 0.d0
++  real*8, save :: deeph_injection_wall_elapsed = 0.d0
++  integer, parameter :: DEEPH_INVALID_LOOP = -huge(0)
++  integer, save :: deeph_last_prepare_loop = DEEPH_INVALID_LOOP
++
++contains
++
++  subroutine deeph_begin_scf_cycle()
++    call deeph_state_begin_scf_cycle_c()
++    call deeph_state_set_injected_this_iteration_c(0_c_int)
++    deeph_fingerprint_ref_valid = .false.
++    deeph_injection_timing_valid = .false.
++    deeph_injection_cpu_elapsed = 0.d0
++    deeph_injection_wall_elapsed = 0.d0
++    deeph_last_prepare_loop = DEEPH_INVALID_LOOP
++    if (allocated(deeph_fingerprint_ref_norm2)) deallocate(deeph_fingerprint_ref_norm2)
++    if (allocated(deeph_fingerprint_ref_maxabs)) deallocate(deeph_fingerprint_ref_maxabs)
++    allocate(deeph_fingerprint_ref_norm2(n_spin))
++    allocate(deeph_fingerprint_ref_maxabs(n_spin))
++    deeph_fingerprint_ref_norm2 = 0.d0
++    deeph_fingerprint_ref_maxabs = 0.d0
++  end subroutine deeph_begin_scf_cycle
++
++  subroutine deeph_prepare_iteration_hamiltonian(hamiltonian)
++    real*8, dimension(n_hamiltonian_matrix_size, n_spin), intent(inout) :: hamiltonian
++    call deeph_maybe_inject_first_iteration(hamiltonian)
++  end subroutine deeph_prepare_iteration_hamiltonian
++
++  logical function deeph_should_skip_hamiltonian_updates()
++    deeph_should_skip_hamiltonian_updates = (deeph_state_get_injected_this_iteration_c() /= 0_c_int)
++  end function deeph_should_skip_hamiltonian_updates
++
++  logical function deeph_should_force_density_hotstart()
++    deeph_should_force_density_hotstart = (deeph_state_get_force_density_hotstart_c() /= 0_c_int)
++  end function deeph_should_force_density_hotstart
++
++  subroutine deeph_finalize_hotstart_nomix()
++    if (.not. deeph_should_force_density_hotstart()) return
++
++    if (mixer.eq.MIX_PULAY) then
++      call allocate_pulay()
++    else if (mixer.eq.MIX_BROYDEN) then
++      call allocate_broyden()
++    end if
++
++    call deeph_state_set_force_density_hotstart_c(0_c_int)
++  end subroutine deeph_finalize_hotstart_nomix
++
++  subroutine deeph_prepare_pre_scf_alignment(hamiltonian)
++    real*8, dimension(n_hamiltonian_matrix_size, n_spin), intent(inout) :: hamiltonian
++    ! Keep default behavior aligned with the previously validated path:
++    ! inject in first formal SCF iteration and apply one-shot no-mix
++    ! density update in the following mixing stage.
++    !
++    ! This pre-SCF alignment hook is intentionally a no-op unless a future
++    ! explicit mode switch is introduced.
++    if (size(hamiltonian,1) > 0) continue
++  end subroutine deeph_prepare_pre_scf_alignment
++
++  subroutine deeph_maybe_inject_first_iteration(hamiltonian)
++    real*8, dimension(n_hamiltonian_matrix_size, n_spin), intent(inout) :: hamiltonian
++
++    character(len=200) :: info_str
++    integer :: i_spin
++    real*8 :: t_cpu_start
++    real*8 :: t_cpu_after_load
++    real*8 :: t_cpu_end
++    real*8 :: t_wall_start
++    real*8 :: t_wall_after_load
++    real*8 :: t_wall_end
++
++    if (number_of_loops /= deeph_last_prepare_loop) then
++      deeph_last_prepare_loop = number_of_loops
++      call deeph_state_set_injected_this_iteration_c(0_c_int)
++    end if
++
++    if (number_of_loops /= 1) return
++    if (deeph_state_get_injected_this_iteration_c() /= 0_c_int) return
++    if (use_local_index) return
++
++    call cpu_time(t_cpu_start)
++    call deeph_walltime_now(t_wall_start)
++
++    if (.not. deeph_try_load_hamiltonian(hamiltonian)) return
++
++    call cpu_time(t_cpu_after_load)
++    call deeph_walltime_now(t_wall_after_load)
++
++    call deeph_state_set_injected_this_iteration_c(1_c_int)
++
++    call deeph_state_set_force_density_hotstart_c(1_c_int)
++    
++    write(info_str,'(A)') ''
++    call localorb_info(info_str,use_unit,'(A)', OL_norm)
++    write(info_str,'(A)') "------------------------------------------------------------"
++    call localorb_info(info_str,use_unit,'(A)', OL_norm)
++    write(info_str,'(A)') 'DeepX restart: using injected real-space Hamiltonian in first SCF iteration.'
++    call localorb_info(info_str,use_unit,'(A)', OL_norm)
++
++    call deeph_log_hamiltonian_fingerprint(hamiltonian, 'after injection')
++    call deeph_compute_hamiltonian_fingerprint(hamiltonian, deeph_fingerprint_ref_norm2, deeph_fingerprint_ref_maxabs)
++    deeph_fingerprint_ref_valid = .true.
++
++    do i_spin = 1, n_spin
++      write(info_str,'(2X,A,I0,A,1PE24.16,A,1PE24.16)') 'DeepX reference fingerprint stored spin=', i_spin, &
++           ' ||H||2=', deeph_fingerprint_ref_norm2(i_spin), ' max|H|=', deeph_fingerprint_ref_maxabs(i_spin)
++      call localorb_info(info_str,use_unit,'(A)', OL_norm)
++    end do
++
++        call cpu_time(t_cpu_end)
++        call deeph_walltime_now(t_wall_end)
++
++        deeph_injection_cpu_elapsed = t_cpu_end - t_cpu_start
++        deeph_injection_wall_elapsed = t_wall_end - t_wall_start
++        deeph_injection_timing_valid = .true.
++
++        write(info_str,'(2X,A,1PE12.5,A,1PE12.5,A)') 'DeepX timing (injection load/map): cpu=', &
++          t_cpu_after_load - t_cpu_start, ' s, wall=', t_wall_after_load - t_wall_start, ' s'
++        call localorb_info(info_str,use_unit,'(A)', OL_norm)
++
++        write(info_str,'(2X,A,1PE12.5,A,1PE12.5,A)') 'DeepX timing (injection fingerprint-ref): cpu=', &
++          t_cpu_end - t_cpu_after_load, ' s, wall=', t_wall_end - t_wall_after_load, ' s'
++        call localorb_info(info_str,use_unit,'(A)', OL_norm)
++
++        write(info_str,'(2X,A,1PE12.5,A,1PE12.5,A)') 'DeepX timing (injection subtotal): cpu=', &
++          deeph_injection_cpu_elapsed, ' s, wall=', deeph_injection_wall_elapsed, ' s'
++        call localorb_info(info_str,use_unit,'(A)', OL_norm)
++        write(info_str,'(A)') "------------------------------------------------------------"
++        call localorb_info(info_str,use_unit,'(A)', OL_norm)
++        write(info_str,'(A)') ''
++        call localorb_info(info_str,use_unit,'(A)', OL_norm)
++  end subroutine deeph_maybe_inject_first_iteration
++
++  subroutine deeph_maybe_log_preks_fingerprint(hamiltonian)
++    real*8, dimension(n_hamiltonian_matrix_size, n_spin), intent(in) :: hamiltonian
++    real*8, allocatable :: norm2_now(:), maxabs_now(:)
++    real*8 :: d_norm2, d_maxabs
++    character(len=200) :: info_str
++    integer :: i_spin
++    logical :: match_all
++    real*8 :: t_cpu_start
++    real*8 :: t_cpu_end
++    real*8 :: t_wall_start
++    real*8 :: t_wall_end
++    real*8 :: t_cpu_preks
++    real*8 :: t_wall_preks
++
++    if (number_of_loops /= 1) return
++    if (deeph_state_get_injected_this_iteration_c() == 0_c_int) return
++
++    call cpu_time(t_cpu_start)
++    call deeph_walltime_now(t_wall_start)
++
++    write(info_str,'(A)') ''
++    call localorb_info(info_str,use_unit,'(A)', OL_norm)
++    write(info_str,'(A)') "------------------------------------------------------------"
++    call localorb_info(info_str,use_unit,'(A)', OL_norm)
++
++    call deeph_log_hamiltonian_fingerprint(hamiltonian, 'before KS solve')
++    if (.not. deeph_fingerprint_ref_valid) then
++      write(info_str,'(2X,A)') 'DeepX fingerprint consistency check skipped: no injection reference fingerprint available.'
++      call localorb_info(info_str,use_unit,'(A)', OL_norm)
++      write(info_str,'(A)') "------------------------------------------------------------"
++      call localorb_info(info_str,use_unit,'(A)', OL_norm)
++      write(info_str,'(A)') ''
++      call localorb_info(info_str,use_unit,'(A)', OL_norm)
++      return
++    end if
++
++    allocate(norm2_now(n_spin), maxabs_now(n_spin))
++    call deeph_compute_hamiltonian_fingerprint(hamiltonian, norm2_now, maxabs_now)
++
++    match_all = .true.
++    do i_spin = 1, n_spin
++      d_norm2 = abs(norm2_now(i_spin) - deeph_fingerprint_ref_norm2(i_spin))
++      d_maxabs = abs(maxabs_now(i_spin) - deeph_fingerprint_ref_maxabs(i_spin))
++
++      if ((d_norm2 > deeph_fingerprint_tol) .or. (d_maxabs > deeph_fingerprint_tol)) then
++        match_all = .false.
++      end if
++
++      write(info_str,'(2X,A,I0,A,1PE12.5,A,1PE12.5,A,1PE12.5)') &
++           'DeepX fingerprint delta spin=', i_spin, ' d||H||2=', d_norm2, ' dmax|H|=', d_maxabs, &
++           ' tol=', deeph_fingerprint_tol
++      call localorb_info(info_str,use_unit,'(A)', OL_norm)
++    end do
++
++    if (match_all) then
++      write(info_str,'(2X,A)') 'DeepX fingerprint consistency: PASS (Hamiltonian unchanged before KS solve).'
++    else
++      write(info_str,'(2X,A)') 'DeepX fingerprint consistency: FAIL (Hamiltonian changed before KS solve).'
++    end if
++    call localorb_info(info_str,use_unit,'(A)', OL_norm)
++
++    call cpu_time(t_cpu_end)
++    call deeph_walltime_now(t_wall_end)
++    t_cpu_preks = t_cpu_end - t_cpu_start
++    t_wall_preks = t_wall_end - t_wall_start
++
++    write(info_str,'(2X,A,1PE12.5,A,1PE12.5,A)') 'DeepX timing (pre-KS consistency check): cpu=', &
++         t_cpu_preks, ' s, wall=', t_wall_preks, ' s'
++    call localorb_info(info_str,use_unit,'(A)', OL_norm)
++
++    if (deeph_injection_timing_valid) then
++      write(info_str,'(2X,A,1PE12.5,A,1PE12.5,A)') 'DeepX timing (first-injection total): cpu=', &
++           deeph_injection_cpu_elapsed + t_cpu_preks, ' s, wall=', deeph_injection_wall_elapsed + t_wall_preks, ' s'
++      call localorb_info(info_str,use_unit,'(A)', OL_norm)
++    end if
++
++    write(info_str,'(A)') "------------------------------------------------------------"
++    call localorb_info(info_str,use_unit,'(A)', OL_norm)
++    write(info_str,'(A)') ''
++    call localorb_info(info_str,use_unit,'(A)', OL_norm)
++
++    deallocate(norm2_now, maxabs_now)
++  end subroutine deeph_maybe_log_preks_fingerprint
++
++  logical function deeph_should_skip_first_integration()
++    deeph_should_skip_first_integration = (deeph_state_get_restart_used_c() /= 0_c_int)
++  end function deeph_should_skip_first_integration
++
++  logical function deeph_try_load_hamiltonian(hamiltonian)
++    real*8, dimension(n_hamiltonian_matrix_size, n_spin), intent(inout) :: hamiltonian
++
++    integer :: i_fn
++    integer :: i_atom
++    integer(c_int) :: ierr_deeph
++    integer(c_int), allocatable :: basisfn_type_i(:)
++    integer(c_int), allocatable :: atom_z_i(:)
++    integer(c_int), allocatable :: idx_ham_flat(:)
++    character(len=200) :: info_str
++
++    deeph_try_load_hamiltonian = .false.
++
++    ! 如果用户没有启用 warmstart，直接返回
++    if (.not. use_deepx_warmstart) then
++      return
++    end if
++
++    allocate(basisfn_type_i(n_basis_fns))
++    allocate(atom_z_i(n_atoms))
++
++    do i_fn = 1, n_basis_fns
++      select case (trim(adjustl(basisfn_type(i_fn))))
++      case ('ionic')
++        basisfn_type_i(i_fn) = 2_c_int
++      case ('atomic')
++        basisfn_type_i(i_fn) = 1_c_int
++      case ('hydro', 'confined')
++        basisfn_type_i(i_fn) = 3_c_int
++      case default
++        basisfn_type_i(i_fn) = 1_c_int
++      end select
++    end do
++
++    do i_atom = 1, n_atoms
++      atom_z_i(i_atom) = int(nint(species_z(species(i_atom))), c_int)
++    end do
++
++    allocate(idx_ham_flat(2 * n_cells_in_hamiltonian * n_basis))
++    idx_ham_flat = reshape(index_hamiltonian, [2 * n_cells_in_hamiltonian * n_basis])
++
++    ierr_deeph = deeph_try_load_autodetect_c(merge(1_c_int, 0_c_int, use_local_index), int(n_atoms, c_int), int(n_basis, c_int), int(n_spin, c_int), &
++      int(n_cells_in_hamiltonian, c_int), int(n_hamiltonian_matrix_size, c_int), &
++      cell_index, idx_ham_flat, idx_ham_flat(2:), column_index_hamiltonian, &
++      basis_fn, basis_atom, basisfn_n, basis_l, basis_m, basisfn_type_i, atom_z_i, hamiltonian)
++
++    deallocate(idx_ham_flat)
++    deallocate(basisfn_type_i)
++    deallocate(atom_z_i)
++
++    if (ierr_deeph == 0_c_int) then
++      deeph_try_load_hamiltonian = .true.
++      write(info_str,'(A)') 'DeepX restart: loaded real-space Hamiltonian from ./deepx_warm or ./deeph_warm.'
++      call localorb_info(info_str,use_unit,'(A)')
++    else if (ierr_deeph == 2_c_int) then
++      write(info_str,'(A)') '*** FATAL ERROR: use_deepx_warmstart is .true. but use_local_index is active (not supported).'
++      call localorb_info(info_str,use_unit,'(A)')
++      call aims_stop('use_deepx_warmstart requires use_local_index to be .false.', 'deeph_try_load_hamiltonian')
++    else if (ierr_deeph == 1_c_int) then
++      ! Do not found warm dir - Fatal ERROR
++      write(info_str,'(A)') '*** FATAL ERROR: use_deepx_warmstart is .true. but ./deepx_warm or ./deeph_warm directories not found.'
++      call localorb_info(info_str,use_unit,'(A)')
++      call aims_stop('use_deepx_warmstart is .true. but warm directory not found. Please create ./deepx_warm or ./deeph_warm.', 'deeph_try_load_hamiltonian')
++    else
++      write(info_str,'(A,I0,A)') '*** FATAL ERROR: DeepX restart failed (ierr=', ierr_deeph, ').'
++      call localorb_info(info_str,use_unit,'(A)')
++      call aims_stop('use_deepx_warmstart is .true. but Hamiltonian loading failed.', 'deeph_try_load_hamiltonian')
++    end if
++
++  end function deeph_try_load_hamiltonian
++
++  subroutine deeph_apply_delta_to_density()
++    integer :: i_spin
++    integer :: i_coords
++
++    if (n_spin .eq. 1) then
++      i_spin = 1
++      rho(i_spin,:) = rho(i_spin,:) + delta_rho_KS(:,i_spin)
++      if (use_density_gradient) then
++        do i_coords = 1, 3
++          rho_gradient(i_coords,i_spin,:) = &
++               rho_gradient(i_coords,i_spin,:) + &
++               delta_rho_gradient(i_coords,:,i_spin)
++        end do
++        if (use_meta_gga) then
++          kinetic_density(i_spin,:) = kinetic_density(i_spin,:) + delta_kinetic_density(:,i_spin)
++        end if
++      end if
++    else
++      rho(1,:) = rho(1,:) + 0.5d0*(delta_rho_KS(:,1)+delta_rho_KS(:,2))
++      rho(2,:) = rho(2,:) + 0.5d0*(delta_rho_KS(:,1)-delta_rho_KS(:,2))
++      if (use_density_gradient) then
++        do i_coords = 1, 3
++            rho_gradient(i_coords,1,:) = rho_gradient(i_coords,1,:) + &
++                0.5d0 * (delta_rho_gradient(i_coords,:,1) + delta_rho_gradient(i_coords,:,2))
++            rho_gradient(i_coords,2,:) = rho_gradient(i_coords,2,:) + &
++                0.5d0 * (delta_rho_gradient(i_coords,:,1) - delta_rho_gradient(i_coords,:,2))
++        end do
++        if (use_meta_gga) then
++          kinetic_density(1,:) = kinetic_density(1,:) + 0.5d0*(delta_kinetic_density(:,1)+delta_kinetic_density(:,2))
++          kinetic_density(2,:) = kinetic_density(2,:) + 0.5d0*(delta_kinetic_density(:,1)-delta_kinetic_density(:,2))
++        end if
++      end if
++    end if
++  end subroutine deeph_apply_delta_to_density
++
++  subroutine deeph_compute_hamiltonian_fingerprint(hamiltonian, norm2_out, maxabs_out)
++    real*8, dimension(n_hamiltonian_matrix_size, n_spin), intent(in) :: hamiltonian
++    real*8, dimension(n_spin), intent(out) :: norm2_out
++    real*8, dimension(n_spin), intent(out) :: maxabs_out
++    integer :: i_spin
++    integer :: i
++    real*8 :: v
++    real*8 :: av
++
++    norm2_out = 0.d0
++    maxabs_out = 0.d0
++
++    do i_spin = 1, n_spin
++      do i = 1, n_hamiltonian_matrix_size
++        v = hamiltonian(i, i_spin)
++        av = abs(v)
++        norm2_out(i_spin) = norm2_out(i_spin) + v * v
++        if (av > maxabs_out(i_spin)) maxabs_out(i_spin) = av
++      end do
++      norm2_out(i_spin) = sqrt(norm2_out(i_spin))
++    end do
++  end subroutine deeph_compute_hamiltonian_fingerprint
++
++  subroutine deeph_log_hamiltonian_fingerprint(hamiltonian, stage)
++    real*8, dimension(n_hamiltonian_matrix_size, n_spin), intent(in) :: hamiltonian
++    character(len=*), intent(in) :: stage
++
++    character(kind=c_char, len=1), dimension(128) :: stage_c
++
++    call deeph_copy_to_c_string(stage, stage_c)
++    call deeph_log_hamiltonian_fingerprint_c(hamiltonian, int(n_hamiltonian_matrix_size, c_int), int(n_spin, c_int), stage_c, int(myid, c_int))
++  end subroutine deeph_log_hamiltonian_fingerprint
++
++  subroutine deeph_dump_hamiltonian(hamiltonian, filename)
++    real*8, dimension(n_hamiltonian_matrix_size, n_spin), intent(in) :: hamiltonian
++    character(len=*), intent(in) :: filename
++
++    character(kind=c_char, len=1), dimension(256) :: filename_c
++
++    call deeph_copy_to_c_string(filename, filename_c)
++    call deeph_dump_hamiltonian_c(hamiltonian, int(n_hamiltonian_matrix_size, c_int), int(n_spin, c_int), filename_c, int(myid, c_int))
++  end subroutine deeph_dump_hamiltonian
++
++  subroutine deeph_copy_to_c_string(str_in, str_out)
++    character(len=*), intent(in) :: str_in
++    character(kind=c_char, len=1), dimension(:), intent(out) :: str_out
++    integer :: i, n
++
++    str_out = c_null_char
++    n = min(len_trim(str_in), size(str_out)-1)
++    do i = 1, n
++      str_out(i) = str_in(i:i)
++    end do
++    str_out(n+1) = c_null_char
++  end subroutine deeph_copy_to_c_string
++
++  subroutine deeph_walltime_now(t)
++    real*8, intent(out) :: t
++    integer :: count
++    integer :: rate
++    integer :: maxv
++
++    call system_clock(count, rate, maxv)
++    if (rate > 0) then
++      t = dble(count) / dble(rate)
++    else
++      t = 0.d0
++    end if
++  end subroutine deeph_walltime_now
++
++end module rs_mx_trans_interface
+
+--- /dev/null
++++ b/src/deeph_interface/src/rs_mx_trans.c
+@@ -0,0 +1,1056 @@
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <math.h>
++#include <stdint.h>
++#include <stddef.h>
++#include <ctype.h>
++#include <sys/stat.h>
++#ifdef DEEPH_WITH_HDF5
++#include <hdf5.h>
++//   #include <hdf5_hl.h>
++#endif
++
++int deeph_load_and_map_c(
++    const char *deeph_dir,
++    int n_atoms,
++    int n_basis,
++    int n_spin,
++    int n_cells,
++    int n_ham_size,
++    const int *cell_index,
++    const int *idx_start,
++    const int *idx_end,
++    const int *col_index,
++    const int *basis_fn,
++    const int *basis_atom,
++    const int *basisfn_n,
++    const int *basis_l,
++    const int *basis_m,
++    const int *basisfn_type,
++    const int *atom_Z,
++    double *ham_out
++);
++
++static int deeph_restart_used_c = 0;
++static int deeph_injected_this_iteration_c = 0;
++static int deeph_force_density_hotstart_c = 0;
++
++static void trim_inplace(char *s) {
++    size_t n;
++    char *start;
++    if (!s) return;
++    n = strlen(s);
++    while (n > 0 && isspace((unsigned char)s[n - 1])) {
++        s[n - 1] = '\0';
++        --n;
++    }
++    start = s;
++    while (*start && isspace((unsigned char)*start)) start++;
++    if (start != s) {
++        memmove(s, start, strlen(start) + 1);
++    }
++}
++
++void deeph_state_begin_scf_cycle_c(void) {
++    deeph_injected_this_iteration_c = 0;
++    deeph_force_density_hotstart_c = 0;
++}
++
++int deeph_state_get_restart_used_c(void) {
++    return deeph_restart_used_c;
++}
++
++int deeph_state_get_injected_this_iteration_c(void) {
++    return deeph_injected_this_iteration_c;
++}
++
++void deeph_state_set_injected_this_iteration_c(int flag) {
++    deeph_injected_this_iteration_c = (flag != 0);
++}
++
++int deeph_state_get_force_density_hotstart_c(void) {
++    return deeph_force_density_hotstart_c;
++}
++
++void deeph_state_set_force_density_hotstart_c(int flag) {
++    deeph_force_density_hotstart_c = (flag != 0);
++}
++
++int deeph_try_load_autodetect_c(
++    int use_local_index,
++    int n_atoms,
++    int n_basis,
++    int n_spin,
++    int n_cells,
++    int n_ham_size,
++    const int *cell_index,
++    const int *idx_start,
++    const int *idx_end,
++    const int *col_index,
++    const int *basis_fn,
++    const int *basis_atom,
++    const int *basisfn_n,
++    const int *basis_l,
++    const int *basis_m,
++    const int *basisfn_type,
++    const int *atom_Z,
++    double *ham_out
++) {
++    char deeph_dir[1024];
++    struct stat st;
++    int rc;
++
++    if (deeph_restart_used_c) return 1;
++    if (use_local_index) return 2;
++
++    deeph_dir[0] = '\0';
++    if (stat("./deepx_warm", &st) == 0 && S_ISDIR(st.st_mode)) {
++        strncpy(deeph_dir, "./deepx_warm", sizeof(deeph_dir) - 1);
++    } else if (stat("./deeph_warm", &st) == 0 && S_ISDIR(st.st_mode)) {
++        strncpy(deeph_dir, "./deeph_warm", sizeof(deeph_dir) - 1);
++    }
++
++    if (deeph_dir[0] == '\0') return 1;
++
++    rc = deeph_load_and_map_c(
++        deeph_dir,
++        n_atoms,
++        n_basis,
++        n_spin,
++        n_cells,
++        n_ham_size,
++        cell_index,
++        idx_start,
++        idx_end,
++        col_index,
++        basis_fn,
++        basis_atom,
++        basisfn_n,
++        basis_l,
++        basis_m,
++        basisfn_type,
++        atom_Z,
++        ham_out
++    );
++
++    if (rc == 0) {
++        deeph_restart_used_c = 1;
++        return 0;
++    }
++
++    return rc;
++}
++
++void deeph_log_hamiltonian_fingerprint_c(const double *ham, int n_ham_size, int n_spin, const char *stage, int myid) {
++    int i_spin;
++    int i;
++    if (myid != 0 || !ham || !stage) return;
++
++    for (i_spin = 0; i_spin < n_spin; ++i_spin) {
++        double sum2 = 0.0;
++        double max_abs = 0.0;
++        const double *hspin = ham + (size_t)i_spin * (size_t)n_ham_size;
++        for (i = 0; i < n_ham_size; ++i) {
++            double v = hspin[i];
++            double a = fabs(v);
++            sum2 += v * v;
++            if (a > max_abs) max_abs = a;
++        }
++        fprintf(stdout, "  DeepX fingerprint [%s] spin=%d ||H||2=% .16E max|H|=% .16E\n",
++                stage, i_spin + 1, sqrt(sum2), max_abs);
++    }
++    fflush(stdout);
++}
++
++void deeph_dump_hamiltonian_c(const double *ham, int n_ham_size, int n_spin, const char *filename, int myid) {
++    FILE *fp;
++    int i;
++
++    if (myid != 0 || !ham || !filename) return;
++    fp = fopen(filename, "w");
++    if (!fp) return;
++
++    if (n_spin == 1) {
++        fprintf(fp, "# idx  H_up\n");
++        for (i = 0; i < n_ham_size; ++i) {
++            fprintf(fp, "%12d % .16E\n", i + 1, ham[i]);
++        }
++    } else {
++        const double *hup = ham;
++        const double *hdn = ham + n_ham_size;
++        fprintf(fp, "# idx  H_up  H_dn\n");
++        for (i = 0; i < n_ham_size; ++i) {
++            fprintf(fp, "%12d % .16E % .16E\n", i + 1, hup[i], hdn[i]);
++        }
++    }
++
++    fclose(fp);
++}
++
++#ifndef DEEPH_WITH_HDF5
++int deeph_load_and_map_c(
++    const char *deeph_dir,
++    int n_atoms,
++    int n_basis,
++    int n_spin,
++    int n_cells,
++    int n_ham_size,
++    const int *cell_index,
++    const int *idx_start,
++    const int *idx_end,
++    const int *col_index,
++    const int *basis_fn,
++    const int *basis_atom,
++    const int *basisfn_n,
++    const int *basis_l,
++    const int *basis_m,
++    const int *basisfn_type,
++    const int *atom_Z,
++    double *ham_out
++) {
++    (void)deeph_dir; (void)n_atoms; (void)n_basis; (void)n_spin;
++    (void)n_cells; (void)n_ham_size; (void)cell_index; (void)idx_start; (void)idx_end;
++    (void)col_index; (void)basis_fn; (void)basis_atom; (void)basisfn_n; (void)basis_l;
++    (void)basis_m; (void)basisfn_type; (void)atom_Z; (void)ham_out;
++    fprintf(stderr, "DeepX interface requires HDF5 support at compile time (DEEPH_WITH_HDF5).\n");
++    return -98;
++}
++
++#else
++
++void rs_mx_trans(const int n_hamiltonian_matrix_size, const int n_cells_in_hamiltonian,
++                const int n_basis, const int n_spin,
++                const double* in_mx, const int* idx_mx, const int* col_idx_mx,
++                const int* cell_idx, 
++                const int* basis_fn, const int* basis_atom, const int* basisfn_n, 
++                const int* basis_l, const int* basis_m,
++                const char* out_filename) {
++/*
++becareful with that matrix storage in Fortran is column-major
++thus in C, we need to swap row and column when accessing the matrix elements
++Fortran: mx(i1, i2, i3) --> C: mx[i1 + i2 * dim1 + i3 * dim1 * dim2]
++
++here, we not parse structures, just the raw arrays.
++
++shape:
++    im_mx: (n_hamiltonian_matrix_size)
++    idx_mx: (2, n_cells_in_hamiltonian, n_basis)
++    col_idx_mx: (n_hamiltonian_matrix_size)
++    cell_idx: (3, n_cells_in_hamiltonian)
++
++deeph data structure ref:
++    atom_pairs: (n_atom_pairs, 5), int
++                each row: [R1, R2, R3; i_atom, j_atom]
++    chunk_boundaries: (n_atom_pairs+1,), int
++                each element: starting index of each chunk in atom_pairs
++    chunk_shape: (n_atom_pairs, 2), int
++                each row: [n_rows, n_cols] of the corresponding chunk
++                         n_rows_i * n_cols_i = chunk_boundaries(i+1) - chunk_boundaries(i)
++    entries: (M,), double if spinless or ovlp, complex double if spinful
++                sorted entries of all chunks concatenated
++
++matrix ref:
++!             Example with cell_index(1,:) == 0,
++!                          cell_index(2,:) == - cell_index(3,:):
++!                       j=1   j=2
++!             i=1 R=1 (  1     2  )   ! index_hamiltonian(:,1,1) = [ 1, 2]
++!             i=2 R=1 (  2*    0  )   ! index_hamiltonian(:,1,2) = [ 0,-1]
++!             i=1 R=2 (  0     3  )   ! index_hamiltonian(:,2,1) = [ 3, 3]
++!             i=2 R=2 (  0     4  )   ! index_hamiltonian(:,2,2) = [ 4, 4]
++!             i=1 R=3 (  0     0  )   ! index_hamiltonian(:,3,1) = [ 0,-1]
++!             i=2 R=3 (  3*    4' )   ! index_hamiltoniah(:,3,2) = [ 5, 5]
++!             hamiltonian              = [1, 2, 3, 4, 4']  # values
++!             column_index_hamiltonian = [1, 2, 2, 2, 2]  # corresponding j
++!             ! 2* and 3* are not stored because of symmetry [only 'U' stored]
++!             ! 4  and 4' are equal because of symmetry but both stored.
++!
++!           Looping then looks like this:
++!
++!           do i_cell_row = 1, n_cells_in_hamiltonian-1   ! yes, "-1".
++!             do i_basis_row = 1, n_basis
++!               i_index_first = index_hamiltonian(1, i_cell_row, i_basis_row)
++!               i_index_last = index_hamiltonian(2, i_cell_row, i_basis_row)
++!               do i_index = i_index_first, i_index_last
++!                 i_basis_col = column_index_hamiltonian(i_index)
++!                 ! Use:
++!                 !    hamiltonian(i_index, i_spin)
++!                 !    density_matrix_sparse(i_index)
++!                 !    and i_basis_row, i_cell_row, i_basis_col
++!                 ! or any combination of
++!                 !    (i_basis_row, i_loc_cell_row), &
++!                 !    & (i_basis_col, i_loc_cell_col),
++!                 ! with
++!                 !    i_cell_row == &
++!                 !    & position_in_hamiltonian(i_loc_cell_row, i_loc_cell_col)
++!               end do
++!             end do
++!           end do
++!
++!
++!           Just a few remarks:
++!            * I (JW) would have named
++!               + index_hamiltonian        -> row2index
++!               + column_index_hamiltonian -> index2col
++!              because the former specifies a range of indices for a given row
++!              consisting of i_basis_row and i_cell_row.  The latter gives
++!              the column (i_basis_col, as i_cell_col=0) for a given index.
++!            * It is kind of unconventional in fortran that the fast index
++!              corresponds to the column instead of the row.
++
++basis ref:
++    do i_basis = 1, n_basis, 1
++      i_fn = basis_fn(i_basis)
++
++      write(info_str,'(I5,1X,A8,1X,I3,1X,I3,1X,I3,1X,I3)') &
++        i_basis, basisfn_type(i_fn), &
++        basis_atom(i_basis), basisfn_n(i_fn), basis_l(i_basis), &
++        basis_m(i_basis)
++        !   fn.   type   at.   n   l   m
++      call localorb_info(info_str,50,'(A)')
++
++    enddo
++
++    phase:
++        (-1)**logical_and(m>0, m%2==1)
++    order: from m=-l to m=+l (wikipedia real spherical harmonics: https://en.wikipedia.org/wiki/Table_of_spherical_harmonics)
++*/
++}
++
++/*
++ * Hash Map Structure to quickly look up DeepH Atom Pairs
++ * Key: (R1, R2, R3, atom_i, atom_j)
++ * Value: index in atom_pairs array
++ */
++typedef struct {
++    int key[5];
++    int value; // -1 if empty
++} HashEntry;
++
++typedef struct {
++    HashEntry* entries;
++    size_t size;
++} HashMap;
++
++// Simple mixing hash function for 5 integers
++uint64_t hash_func(const int* key, size_t size) {
++    uint64_t hash = 14695981039346656037UL;
++    for (size_t i = 0; i < 5; ++i) {
++        hash ^= (uint64_t)(key[i]);
++        hash *= 1099511628211UL;
++    }
++    return hash % size;
++}
++
++HashMap* create_hash_map(size_t n_pairs) {
++    // Load factor ~0.7
++    size_t size = (size_t)(n_pairs * 1.5) + 7;
++    HashMap* map = (HashMap*)malloc(sizeof(HashMap));
++    map->entries = (HashEntry*)malloc(sizeof(HashEntry) * size);
++    map->size = size;
++    for (size_t i = 0; i < size; ++i) {
++        map->entries[i].value = -1;
++    }
++    return map;
++}
++
++void free_hash_map(HashMap* map) {
++    if (map) {
++        if (map->entries) free(map->entries);
++        free(map);
++    }
++}
++
++void map_insert(HashMap* map, const int* key5, int value) {
++    uint64_t idx = hash_func(key5, map->size);
++    while (map->entries[idx].value != -1) {
++        // Linear probing
++        int match = 1;
++        for(int k=0; k<5; k++) if(map->entries[idx].key[k] != key5[k]) match = 0;
++        if (match) {
++            // Already exists, update implementation (should not happen for unique pairs)
++            return;
++        }
++        idx = (idx + 1) % map->size;
++    }
++    // Found empty slot
++    for(int k=0; k<5; k++) map->entries[idx].key[k] = key5[k];
++    map->entries[idx].value = value;
++}
++
++int map_get(HashMap* map, const int* key5) {
++    uint64_t idx = hash_func(key5, map->size);
++    while (map->entries[idx].value != -1) {
++        int match = 1;
++        for(int k=0; k<5; k++) if(map->entries[idx].key[k] != key5[k]) match = 0;
++        if (match) {
++            return map->entries[idx].value;
++        }
++        idx = (idx + 1) % map->size;
++    }
++    return -1; // Not found
++}
++
++/* ===================================================================== */
++/*                         Reverse (DeepH -> aims)                       */
++/* ===================================================================== */
++
++typedef struct {
++    int *atom_pairs;          /* (n_pairs,5) */
++    int *chunk_boundaries;    /* (n_pairs+1) */
++    int *chunk_shapes;        /* (n_pairs,2) */
++    double *entries;          /* flattened entries */
++    int n_pairs;
++    int n_entries;
++} deeph_matrix_t;
++
++static void free_deeph_matrix(deeph_matrix_t *mx) {
++    if(!mx) return;
++    free(mx->atom_pairs);
++    free(mx->chunk_boundaries);
++    free(mx->chunk_shapes);
++    free(mx->entries);
++    mx->atom_pairs = NULL;
++    mx->chunk_boundaries = NULL;
++    mx->chunk_shapes = NULL;
++    mx->entries = NULL;
++}
++
++static int read_int_dataset(hid_t file, const char *name, int **out_data, hsize_t *out_len) {
++    hid_t dset = H5Dopen(file, name, H5P_DEFAULT);
++    if(dset < 0) return -1;
++    hid_t space = H5Dget_space(dset);
++    int ndims = H5Sget_simple_extent_ndims(space);
++    hsize_t dims[4] = {0};
++    H5Sget_simple_extent_dims(space, dims, NULL);
++    hsize_t total = 1;
++    for(int i=0;i<ndims;i++) total *= dims[i];
++    int *buf = (int*)malloc(sizeof(int)*total);
++    if(!buf) { H5Sclose(space); H5Dclose(dset); return -2; }
++    herr_t st = H5Dread(dset, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
++    H5Sclose(space);
++    H5Dclose(dset);
++    if(st < 0) { free(buf); return -3; }
++    *out_data = buf;
++    if(out_len) *out_len = total;
++    return 0;
++}
++
++static int read_double_dataset(hid_t file, const char *name, double **out_data, hsize_t *out_len) {
++    hid_t dset = H5Dopen(file, name, H5P_DEFAULT);
++    if(dset < 0) return -1;
++    hid_t space = H5Dget_space(dset);
++    int ndims = H5Sget_simple_extent_ndims(space);
++    hsize_t dims[4] = {0};
++    H5Sget_simple_extent_dims(space, dims, NULL);
++    hsize_t total = 1;
++    for(int i=0;i<ndims;i++) total *= dims[i];
++    double *buf = (double*)malloc(sizeof(double)*total);
++    if(!buf) { H5Sclose(space); H5Dclose(dset); return -2; }
++    herr_t st = H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
++    H5Sclose(space);
++    H5Dclose(dset);
++    if(st < 0) { free(buf); return -3; }
++    *out_data = buf;
++    if(out_len) *out_len = total;
++    return 0;
++}
++
++typedef struct {
++    double re;
++    double im;
++} deeph_complex_t;
++
++static int read_entries_dataset(hid_t file, const char *name, double **out_data, hsize_t *out_len) {
++    hid_t dset = H5Dopen(file, name, H5P_DEFAULT);
++    if(dset < 0) return -1;
++
++    hid_t space = H5Dget_space(dset);
++    int ndims = H5Sget_simple_extent_ndims(space);
++    hsize_t dims[4] = {0};
++    H5Sget_simple_extent_dims(space, dims, NULL);
++    hsize_t total = 1;
++    for(int i=0;i<ndims;i++) total *= dims[i];
++
++    hid_t dtype = H5Dget_type(dset);
++    H5T_class_t cls = H5Tget_class(dtype);
++
++    double *buf = (double*)malloc(sizeof(double)*total);
++    if(!buf) {
++        H5Tclose(dtype);
++        H5Sclose(space);
++        H5Dclose(dset);
++        return -2;
++    }
++
++    if(cls == H5T_FLOAT) {
++        herr_t st = H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
++        if(st < 0) {
++            free(buf);
++            H5Tclose(dtype);
++            H5Sclose(space);
++            H5Dclose(dset);
++            return -3;
++        }
++    } else if(cls == H5T_COMPOUND && H5Tget_nmembers(dtype) == 2) {
++        hid_t memtype = H5Tcreate(H5T_COMPOUND, sizeof(deeph_complex_t));
++        char *m0 = H5Tget_member_name(dtype, 0);
++        char *m1 = H5Tget_member_name(dtype, 1);
++        if(!m0 || !m1) {
++            if(m0) H5free_memory(m0);
++            if(m1) H5free_memory(m1);
++            H5Tclose(memtype);
++            free(buf);
++            H5Tclose(dtype);
++            H5Sclose(space);
++            H5Dclose(dset);
++            return -4;
++        }
++
++        H5Tinsert(memtype, m0, offsetof(deeph_complex_t, re), H5T_NATIVE_DOUBLE);
++        H5Tinsert(memtype, m1, offsetof(deeph_complex_t, im), H5T_NATIVE_DOUBLE);
++
++        deeph_complex_t *cbuf = (deeph_complex_t*)malloc(sizeof(deeph_complex_t)*total);
++        if(!cbuf) {
++            H5free_memory(m0);
++            H5free_memory(m1);
++            H5Tclose(memtype);
++            free(buf);
++            H5Tclose(dtype);
++            H5Sclose(space);
++            H5Dclose(dset);
++            return -5;
++        }
++
++        herr_t st = H5Dread(dset, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, cbuf);
++        H5free_memory(m0);
++        H5free_memory(m1);
++        H5Tclose(memtype);
++        if(st < 0) {
++            free(cbuf);
++            free(buf);
++            H5Tclose(dtype);
++            H5Sclose(space);
++            H5Dclose(dset);
++            return -6;
++        }
++
++        for(hsize_t i=0; i<total; ++i) {
++            buf[i] = cbuf[i].re;
++        }
++        free(cbuf);
++    } else {
++        free(buf);
++        H5Tclose(dtype);
++        H5Sclose(space);
++        H5Dclose(dset);
++        return -7;
++    }
++
++    H5Tclose(dtype);
++    H5Sclose(space);
++    H5Dclose(dset);
++
++    *out_data = buf;
++    if(out_len) *out_len = total;
++    return 0;
++}
++
++/* Read DeepH matrix (H or S) */
++static int load_deeph_matrix(const char *filepath, deeph_matrix_t *mx) {
++    hid_t file = H5Fopen(filepath, H5F_ACC_RDONLY, H5P_DEFAULT);
++    if(file < 0) return -1;
++    hsize_t len = 0;
++    int rc = 0;
++    rc |= read_int_dataset(file, "atom_pairs", &mx->atom_pairs, &len);
++    if(rc) { H5Fclose(file); return -2; }
++    mx->n_pairs = (int)(len/5);
++    rc |= read_int_dataset(file, "chunk_boundaries", &mx->chunk_boundaries, &len);
++    rc |= read_int_dataset(file, "chunk_shapes", &mx->chunk_shapes, &len);
++    rc |= read_entries_dataset(file, "entries", &mx->entries, &len);
++    mx->n_entries = (int)len;
++    H5Fclose(file);
++    if(rc) return rc;
++
++    if(!mx->atom_pairs || !mx->chunk_boundaries || !mx->chunk_shapes || !mx->entries) return -4;
++    if(mx->n_pairs <= 0) return -5;
++    if(mx->chunk_boundaries[0] != 0) return -6;
++    if(mx->chunk_boundaries[mx->n_pairs] != mx->n_entries) return -7;
++
++    for(int i=0; i<mx->n_pairs; ++i) {
++        int b0 = mx->chunk_boundaries[i];
++        int b1 = mx->chunk_boundaries[i+1];
++        int nr = mx->chunk_shapes[i * 2 + 0];
++        int nc = mx->chunk_shapes[i * 2 + 1];
++        if(b0 < 0 || b1 < b0 || b1 > mx->n_entries) return -8;
++        if(nr <= 0 || nc <= 0) return -9;
++        if((long long)nr * (long long)nc != (long long)(b1 - b0)) return -10;
++    }
++    return rc;
++}
++
++static int validate_pair_shapes(const deeph_matrix_t *mx, const int *orbit_per_atom, int n_atoms, int spinful) {
++    if(!mx || !orbit_per_atom || n_atoms <= 0) return -11;
++
++    int factor = spinful ? 2 : 1;
++    for(int i = 0; i < mx->n_pairs; ++i) {
++        int ai = mx->atom_pairs[i * 5 + 3];
++        int aj = mx->atom_pairs[i * 5 + 4];
++        if(ai < 0 || ai >= n_atoms || aj < 0 || aj >= n_atoms) return -12;
++
++        int expect_rows = factor * orbit_per_atom[ai];
++        int expect_cols = factor * orbit_per_atom[aj];
++        int got_rows = mx->chunk_shapes[i * 2 + 0];
++        int got_cols = mx->chunk_shapes[i * 2 + 1];
++        if(got_rows != expect_rows || got_cols != expect_cols) return -13;
++    }
++
++    return 0;
++}
++
++/* --------------------------------------------------------------------- */
++/* Hash map (key=R1,R2,R3,ai,aj) */
++static int cmp_int(const void *a, const void *b){
++    int ia = *(const int*)a;
++    int ib = *(const int*)b;
++    if(ia<ib) return -1; if(ia>ib) return 1; return 0;
++}
++
++/* Build atom permutation: replicate aims_to_deeph.py ordering (stable sort by chemical symbol) */
++static const char* atomic_symbol_from_Z(int z){
++    /* minimal table up to 118 */
++    static const char* tbl[] = {
++        "", "H","He","Li","Be","B","C","N","O","F","Ne",
++        "Na","Mg","Al","Si","P","S","Cl","Ar",
++        "K","Ca","Sc","Ti","V","Cr","Mn","Fe","Co","Ni","Cu","Zn",
++        "Ga","Ge","As","Se","Br","Kr",
++        "Rb","Sr","Y","Zr","Nb","Mo","Tc","Ru","Rh","Pd","Ag","Cd",
++        "In","Sn","Sb","Te","I","Xe",
++        "Cs","Ba","La","Ce","Pr","Nd","Pm","Sm","Eu","Gd","Tb","Dy","Ho","Er","Tm","Yb","Lu",
++        "Hf","Ta","W","Re","Os","Ir","Pt","Au","Hg",
++        "Tl","Pb","Bi","Po","At","Rn",
++        "Fr","Ra","Ac","Th","Pa","U","Np","Pu","Am","Cm","Bk","Cf","Es","Fm","Md","No","Lr",
++        "Rf","Db","Sg","Bh","Hs","Mt","Ds","Rg","Cn","Nh","Fl","Mc","Lv","Ts","Og"
++    };
++    if(z<0 || z >= (int)(sizeof(tbl)/sizeof(tbl[0]))) return "";
++    return tbl[z];
++}
++
++/* Map aims basisfn_type integer to the forward BASIS_TYPE_ORDER: ionic(0) < atomic(1) < hydro(2). 
++ * If unknown code, fall back to 1 (atomic) to preserve mid ordering. */
++
++static void build_atom_permutation(int n_atoms, const int *atom_Z, int *old2new, int *new2old) {
++    int *idx = (int*)malloc(sizeof(int)*n_atoms);
++    for(int i=0;i<n_atoms;i++) idx[i]=i;
++    /* stable sort by symbol lexicographic, fallback to Z then index */
++    for(int i=0;i<n_atoms-1;i++){
++        for(int j=i+1;j<n_atoms;j++){
++            const char* si = atomic_symbol_from_Z(atom_Z[idx[i]]);
++            const char* sj = atomic_symbol_from_Z(atom_Z[idx[j]]);
++            int cmp = strcmp(si, sj);
++            if(cmp > 0 || (cmp==0 && atom_Z[idx[i]] > atom_Z[idx[j]]) || (cmp==0 && atom_Z[idx[i]]==atom_Z[idx[j]] && idx[i] > idx[j])) {
++                int tmp=idx[i]; idx[i]=idx[j]; idx[j]=tmp;
++            }
++        }
++    }
++    for(int newi=0; newi<n_atoms; newi++){
++        int oldi = idx[newi];
++        old2new[oldi] = newi;
++        new2old[newi] = oldi;
++    }
++    free(idx);
++}
++
++/* Map aims basisfn_type integer to the forward BASIS_TYPE_ORDER: ionic(0) < atomic(1) < hydro(2).
++ * Typical encodings in aims: 2=ionic, 1=atomic, 3=hydro/confined. Unknown codes are treated as
++ * atomic to stay in the middle of the ordering.
++ */
++static int basis_type_rank(int type_code){
++    switch(type_code){
++        case 2: return 0; /* ionic */
++        case 1: return 1; /* atomic */
++        case 3: return 2; /* hydro / confined */
++        case 0: return 1; /* also atomic in some sets */
++        default: return 1; /* treat unknown as atomic */
++    }
++}
++
++typedef struct {
++    int l, n, atom_new, m, type_rank;
++    int aims_idx; /* 0-based */
++} basis_item_t;
++
++static int cmp_basis_item(const void *a, const void *b){
++    const basis_item_t *x = (const basis_item_t*)a;
++    const basis_item_t *y = (const basis_item_t*)b;
++    /*
++     * Keep the original AIMS basis traversal order.
++     * Forward aims_to_deeph now disables orbital sorting and uses the
++     * native per-atom orbital order directly.
++     */
++    if(x->aims_idx != y->aims_idx) return (x->aims_idx < y->aims_idx) ? -1 : 1;
++    return 0;
++}
++
++/* Build mapping from aims basis -> deeph basis order */
++static void build_basis_maps(int n_basis, int n_atoms,
++    const int *basis_fn, const int *basis_atom, const int *basisfn_n, const int *basis_l, const int *basis_m,
++    const int *basisfn_type, const int *atom_old2new,
++    int *basis_deeph_index, int *basis_atom_new, int *basis_subidx, int *orbit_per_atom)
++{
++    basis_item_t *items = (basis_item_t*)malloc(sizeof(basis_item_t)*n_basis);
++    for(int i=0;i<n_basis;i++) {
++        int atom_old = basis_atom[i]-1; /* aims passes 1-based */
++        items[i].l = basis_l[i];
++        int fn_idx = basis_fn ? (basis_fn[i]-1) : -1;
++        items[i].n = (basisfn_n && fn_idx>=0) ? basisfn_n[fn_idx] : 0;
++        items[i].atom_new = atom_old>=0 ? atom_old2new[atom_old] : atom_old;
++        items[i].m = basis_m[i];
++        int type_code = (basisfn_type && fn_idx>=0) ? basisfn_type[fn_idx] : 0;
++        items[i].type_rank = basis_type_rank(type_code);
++        items[i].aims_idx = i;
++    }
++    qsort(items, n_basis, sizeof(basis_item_t), cmp_basis_item);
++
++    /* count per-atom and assign subidx */
++    for(int i=0;i<n_atoms;i++) orbit_per_atom[i]=0;
++    for(int newidx=0; newidx<n_basis; newidx++) {
++        int aims_idx = items[newidx].aims_idx;
++        int atom_new = items[newidx].atom_new;
++        int sub = orbit_per_atom[atom_new];
++        orbit_per_atom[atom_new]++;
++        basis_deeph_index[aims_idx] = newidx;
++        basis_atom_new[aims_idx] = atom_new;
++        basis_subidx[aims_idx] = sub;
++    }
++    free(items);
++}
++
++/* Convert DeepH -> aims for single-spin matrix */
++static void convert_deeph_to_aims_single(
++    double* out_aims_entries,
++    const deeph_matrix_t *mx,
++    int n_cells,
++    int n_basis,
++    int n_ham_size,
++    const int* cell_indices,
++    const int* start_idx_mx,
++    const int* end_idx_mx,
++    const int* col_idx_mx,
++    const int* basis_atom_new,
++    const int* basis_subidx,
++    const int* phase_factors,
++    double unit_conv
++) {
++    HashMap* map = create_hash_map(mx->n_pairs);
++    for (int i = 0; i < mx->n_pairs; ++i) {
++        const int* current_key = &mx->atom_pairs[i * 5];
++        map_insert(map, current_key, i);
++    }
++
++    /* index_hamiltonian is (2, n_cells, n_basis)
++     * idx_start points to index_hamiltonian(1,1,1). Stride is 2.
++     * idx_end points to index_hamiltonian(2,1,1). Stride is 2.
++     * BUT wait, we are passing &index_hamiltonian(2,1,1) as idx_end.
++     * So idx_end[0] is index_hamiltonian(2,1,1).
++     * And likely idx_end[2] is index_hamiltonian(2,2,1).
++     */
++
++    int n_cells_loop = (n_cells > 0) ? (n_cells - 1) : 0;
++    
++    #pragma omp parallel for schedule(dynamic)
++    for (int ic = 0; ic < n_cells_loop; ++ic) {
++        int R[3];
++        /*
++         * Forward aims_to_deeph exports atom_pairs with negated cell vectors:
++         *   R_deeph = -R_aims
++         * Match that convention here when querying DeepH pair keys.
++         */
++        R[0] = -cell_indices[ic + 0 * n_cells];
++        R[1] = -cell_indices[ic + 1 * n_cells];
++        R[2] = -cell_indices[ic + 2 * n_cells];
++
++        for (int ib_row = 0; ib_row < n_basis; ++ib_row) {
++            int if_idx = ic + ib_row * n_cells;
++            
++            /* Check strides carefully. 
++               Fortran: index_hamiltonian(2, n_cells, n_basis)
++               C linear index for (1, ic, ib) = (0) + (ic)*2 + (ib)*2*n_cells
++               So yes, stride is 2.
++            */
++            int start = start_idx_mx[2 * if_idx] - 1; 
++            
++            /* For idx_end, we passed address of index_hamiltonian(2,1,1).
++               Relative layout:
++               (1,1,1) -> start[0]
++               (2,1,1) -> start[1] == end[0]
++               (1,2,1) -> start[2]
++               (2,2,1) -> start[3] == end[2]
++               So end_idx_mx[2 * if_idx] corresponds to (2, ic, ib) relative to (2,1,1).
++               (2, ic, ib) relative to (1,1,1) is 1 + ic*2 + ib*2*n_cells.
++               (2, ic, ib) relative to (2,1,1) is (ic*2 + ib*2*n_cells).
++               So yes, end_idx_mx[2 * if_idx] is correct.
++            */
++            int end   = end_idx_mx[2 * if_idx]   - 1;
++
++            if(start < 0 || end < start) continue;
++
++            int atom_i = basis_atom_new[ib_row];
++            int orb_i  = basis_subidx[ib_row];
++            int phase_i = phase_factors[ib_row];
++
++            for (int k = start; k <= end; ++k) {
++                if (k < 0 || k >= n_ham_size) continue;
++                int ib_col = col_idx_mx[k] - 1; /* Fortran 1-based */
++                if(ib_col < 0 || ib_col >= n_basis) continue;
++
++                int atom_j = basis_atom_new[ib_col];
++                int orb_j  = basis_subidx[ib_col];
++                int phase_j = phase_factors[ib_col];
++
++                int search_key[5] = {R[0], R[1], R[2], atom_i, atom_j};
++                int pair_idx = map_get(map, search_key);
++
++                double val = 0.0;
++
++                if (pair_idx != -1) {
++                    int bound_start = mx->chunk_boundaries[pair_idx];
++                    int n_row_block = mx->chunk_shapes[pair_idx * 2 + 0];
++                    int n_col_block = mx->chunk_shapes[pair_idx * 2 + 1];
++                    if (orb_i >= 0 && orb_j >= 0 && orb_i < n_row_block && orb_j < n_col_block) {
++                         int val_offset = bound_start + (orb_i * n_col_block + orb_j);
++                         if (val_offset >= 0 && val_offset < mx->n_entries) {
++                             val = mx->entries[val_offset];
++                         }
++                    }
++                } else {
++                    int rev_key[5] = {-R[0], -R[1], -R[2], atom_j, atom_i};
++                    int rev_pair_idx = map_get(map, rev_key);
++                    if (rev_pair_idx != -1) {
++                        int bound_start = mx->chunk_boundaries[rev_pair_idx];
++                        int n_row_block = mx->chunk_shapes[rev_pair_idx * 2 + 0];
++                        int n_col_block = mx->chunk_shapes[rev_pair_idx * 2 + 1];
++                        if (orb_j >= 0 && orb_i >= 0 && orb_j < n_row_block && orb_i < n_col_block) {
++                            int val_offset = bound_start + (orb_j * n_col_block + orb_i);
++                            if (val_offset >= 0 && val_offset < mx->n_entries) {
++                                val = mx->entries[val_offset];
++                            }
++                        }
++                    } else {
++                        val = 0.0;
++                    }
++                }
++
++                if (phase_i == -1) val = -val;
++                if (phase_j == -1) val = -val;
++
++                out_aims_entries[k] = val * unit_conv;
++            }
++        }
++    }
++
++    free_hash_map(map);
++}
++
++/* Spinful: split 2N x 2N block into up/down */
++static void convert_deeph_to_aims_spinful(
++    double* out_up,
++    double* out_dn,
++    const deeph_matrix_t *mx,
++    int n_cells,
++    int n_basis,
++    int n_ham_size,
++    const int* cell_indices,
++    const int* start_idx_mx,
++    const int* end_idx_mx,
++    const int* col_idx_mx,
++    const int* basis_atom_new,
++    const int* basis_subidx,
++    const int* phase_factors,
++    double unit_conv
++) {
++    HashMap* map = create_hash_map(mx->n_pairs);
++    for (int i = 0; i < mx->n_pairs; ++i) {
++        const int* current_key = &mx->atom_pairs[i * 5];
++        map_insert(map, current_key, i);
++    }
++
++    int n_cells_loop = (n_cells > 0) ? (n_cells - 1) : 0;
++    
++    #ifdef _OPENMP
++    #pragma omp parallel for schedule(dynamic)
++    #endif
++    for (int ic = 0; ic < n_cells_loop; ++ic) {
++        int R[3];
++        /* Keep cell-vector sign consistent with forward export convention. */
++        R[0] = -cell_indices[ic + 0 * n_cells];
++        R[1] = -cell_indices[ic + 1 * n_cells];
++        R[2] = -cell_indices[ic + 2 * n_cells];
++
++        for (int ib_row = 0; ib_row < n_basis; ++ib_row) {
++            int if_idx = ic + ib_row * n_cells;
++            int start = start_idx_mx[2 * if_idx] - 1;
++            int end   = end_idx_mx[2 * if_idx]   - 1;
++            if(start < 0 || end < start) continue;
++
++            int atom_i = basis_atom_new[ib_row];
++            int orb_i  = basis_subidx[ib_row];
++            int phase_i = phase_factors[ib_row];
++
++            for (int k = start; k <= end; ++k) {
++                if (k < 0 || k >= n_ham_size) continue;
++                int ib_col = col_idx_mx[k] - 1;
++                if(ib_col < 0 || ib_col >= n_basis) continue;
++
++                int atom_j = basis_atom_new[ib_col];
++                int orb_j  = basis_subidx[ib_col];
++                int phase_j = phase_factors[ib_col];
++
++                int search_key[5] = {R[0], R[1], R[2], atom_i, atom_j};
++                int pair_idx = map_get(map, search_key);
++
++                double val_up = 0.0;
++                double val_dn = 0.0;
++
++                if (pair_idx != -1) {
++                    int bound_start = mx->chunk_boundaries[pair_idx];
++                    int n_row_block = mx->chunk_shapes[pair_idx * 2 + 0];
++                    int n_col_block = mx->chunk_shapes[pair_idx * 2 + 1];
++                    if ((n_row_block % 2) != 0 || (n_col_block % 2) != 0) {
++                        out_up[k] = 0.0;
++                        out_dn[k] = 0.0;
++                        continue;
++                    }
++                    int n_row_spin = n_row_block / 2;
++                    int n_col_spin = n_col_block / 2;
++                    int val_offset_base = bound_start;
++
++                    if (orb_i >= 0 && orb_j >= 0 && orb_i < n_row_spin && orb_j < n_col_spin) {
++                        /* Up-Up */
++                        int off_up = val_offset_base + (orb_i * n_col_block + orb_j);
++                        /* Dn-Dn: lower-right block */
++                        int off_dn = val_offset_base + ((orb_i + n_row_spin) * n_col_block + (orb_j + n_col_spin));
++                        if (off_up >= 0 && off_up < mx->n_entries) val_up = mx->entries[off_up];
++                        if (off_dn >= 0 && off_dn < mx->n_entries) val_dn = mx->entries[off_dn];
++                    }
++
++                } else {
++                    int rev_key[5] = {-R[0], -R[1], -R[2], atom_j, atom_i};
++                    int rev_pair_idx = map_get(map, rev_key);
++                    if (rev_pair_idx != -1) {
++                        int bound_start = mx->chunk_boundaries[rev_pair_idx];
++                        int n_row_block = mx->chunk_shapes[rev_pair_idx * 2 + 0];
++                        int n_col_block = mx->chunk_shapes[rev_pair_idx * 2 + 1];
++                        if ((n_row_block % 2) != 0 || (n_col_block % 2) != 0) {
++                            out_up[k] = 0.0;
++                            out_dn[k] = 0.0;
++                            continue;
++                        }
++                        int n_row_spin = n_row_block / 2;
++                        int n_col_spin = n_col_block / 2;
++                        int val_offset_base = bound_start;
++                        
++                        if (orb_j >= 0 && orb_i >= 0 && orb_j < n_row_spin && orb_i < n_col_spin) {
++                            int off_up = val_offset_base + (orb_j * n_col_block + orb_i);
++                            int off_dn = val_offset_base + ((orb_j + n_row_spin) * n_col_block + (orb_i + n_col_spin));
++                            if (off_up >= 0 && off_up < mx->n_entries) val_up = mx->entries[off_up];
++                            if (off_dn >= 0 && off_dn < mx->n_entries) val_dn = mx->entries[off_dn];
++                        }
++                    } else {
++                        val_up = 0.0; val_dn = 0.0;
++                    }
++                }
++
++                if (phase_i == -1) { val_up = -val_up; val_dn = -val_dn; }
++                if (phase_j == -1) { val_up = -val_up; val_dn = -val_dn; }
++
++                out_up[k] = val_up * unit_conv;
++                out_dn[k] = val_dn * unit_conv;
++            }
++        }
++    }
++
++    free_hash_map(map);
++}
++
++/* Public entry: returns 0 on success */
++int deeph_load_and_map_c(
++    const char *deeph_dir,
++    int n_atoms,
++    int n_basis,
++    int n_spin,
++    int n_cells,
++    int n_ham_size,
++    const int *cell_index,          /* (n_cells,3) Fortran layout */
++    const int *idx_start,           /* index_hamiltonian(1,:,:) shape (n_cells,n_basis) */
++    const int *idx_end,             /* index_hamiltonian(2,:,:) */
++    const int *col_index,           /* column_index_hamiltonian */
++    const int *basis_fn,            /* basis_fn(i_basis), 1-based */
++    const int *basis_atom,          /* length n_basis, 1-based atoms */
++    const int *basisfn_n,
++    const int *basis_l,
++    const int *basis_m,
++    const int *basisfn_type,        /* basisfn_type(i_fn), 1-based */
++    const int *atom_Z,              /* length n_atoms */
++    double *ham_out                 /* length n_ham_size * n_spin */
++) {
++    /* 1. read DeepH files */
++    char path_h_alt[1024];
++    snprintf(path_h_alt, sizeof(path_h_alt), "%s/hamiltonian.h5", deeph_dir);
++
++    deeph_matrix_t mx_h = {0};
++    
++    if(load_deeph_matrix(path_h_alt, &mx_h) != 0) {
++        fprintf(stderr, "Failed to read %s \n", path_h_alt);
++        return -1;
++    }
++    
++
++    /* 2. atom permutation */
++    int *old2new = (int*)malloc(sizeof(int)*n_atoms);
++    int *new2old = (int*)malloc(sizeof(int)*n_atoms);
++    build_atom_permutation(n_atoms, atom_Z, old2new, new2old);
++
++    /* 3. basis mapping */
++    int *basis_deeph_index = (int*)malloc(sizeof(int)*n_basis);
++    int *basis_atom_new    = (int*)malloc(sizeof(int)*n_basis);
++    int *basis_subidx      = (int*)malloc(sizeof(int)*n_basis);
++    int *orbit_per_atom    = (int*)malloc(sizeof(int)*n_atoms);
++    build_basis_maps(n_basis, n_atoms, basis_fn, basis_atom, basisfn_n, basis_l, basis_m, basisfn_type, old2new,
++        basis_deeph_index, basis_atom_new, basis_subidx, orbit_per_atom);
++
++    {
++        int v_h = validate_pair_shapes(&mx_h, orbit_per_atom, n_atoms, (n_spin == 2));
++        if(v_h != 0) {
++            free_deeph_matrix(&mx_h);
++            free(old2new); free(new2old); free(basis_deeph_index); free(basis_atom_new); free(basis_subidx); free(orbit_per_atom);
++            return v_h;
++        }
++    }
++
++    /* 4. phase factors */
++    int *phase = (int*)malloc(sizeof(int)*n_basis);
++    for(int i=0;i<n_basis;i++) {
++        int m = basis_m[i];
++        int neg = (m>0 && (m%2)!=0);
++        phase[i] = neg ? -1 : 1;
++    }
++
++    /* 5. map Hamiltonian */
++    double ev2hartree = 1.0 / 27.2113845;
++    if(n_spin == 1) {
++        convert_deeph_to_aims_single(ham_out, &mx_h, n_cells, n_basis, n_ham_size,
++            cell_index, idx_start, idx_end, col_index, basis_atom_new, basis_subidx, phase, ev2hartree);
++    } else if(n_spin == 2) {
++        convert_deeph_to_aims_spinful(ham_out, ham_out + n_ham_size, &mx_h, n_cells, n_basis, n_ham_size,
++            cell_index, idx_start, idx_end, col_index, basis_atom_new, basis_subidx, phase, ev2hartree);
++    }
++
++    /* cleanup */
++    free_deeph_matrix(&mx_h);
++    free(old2new); free(new2old); free(basis_deeph_index); free(basis_atom_new); free(basis_subidx); free(orbit_per_atom); free(phase);
++
++    return 0;
++}
++
++#endif
+

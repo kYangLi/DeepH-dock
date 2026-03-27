@@ -17,23 +17,30 @@ keywords = [
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Chemistry",
 ]
 
 requires-python = ">=3.12,<3.15"
 dependencies = [
+    # Core
     "numpy",
+    "scipy",
     "h5py",
+    "click",
     "tqdm",
     "toml",
-    "scipy",
+    "threadpoolctl",
+    # Misc
     "matplotlib",
     "mendeleev",
-    "libtetrabz",
-    "threadpoolctl",
-    "click",
+    # Computation
     "ase",
-    "mpi4py",
+    "libtetrabz",
+    "hpro",
 ]
 
 [project.optional-dependencies]
@@ -42,17 +49,13 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "pytest-timeout>=2.0",
-    
     # Linting & Formatting
     "ruff>=0.1.0",
     "black>=23.0",
-    
     # Type checking
     "mypy>=1.0",
-    
     # Pre-commit hooks
     "pre-commit>=3.0",
-    
     # Documentation (inherit from docs)
     "sphinx",
     "sphinx-book-theme",
@@ -81,6 +84,8 @@ docs = [
     "docutils",
 ]
 
+mpi = ["mpi4py"]
+
 petsc = [
     "mpi4py",
     "numpy",
@@ -93,7 +98,10 @@ pyscf = [
 ]
 
 [project.urls]
+Homepage = "https://github.com/kYangLi/DeepH-dock"
+Documentation = "https://github.com/kYangLi/DeepH-dock#readme"
 Repository = "https://github.com/kYangLi/DeepH-dock.git"
+Issues = "https://github.com/kYangLi/DeepH-dock/issues"
 
 [project.scripts]
 dock = "deepx_dock._cli:cli"
@@ -123,3 +131,43 @@ line-length = 120
 
 [tool.ruff]
 line-length = 120
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "unit: Unit tests (fast, isolated)",
+    "integration: Integration tests (slower, use real data)",
+    "slow: Slow tests",
+]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "-ra",
+    "-rP",
+    "--cov=deepx_dock",
+    "--cov-report=term-missing",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["deepx_dock"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "*/site-packages/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+]
+precision = 2

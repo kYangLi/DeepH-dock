@@ -22,7 +22,7 @@ def fhi_aims_data():
 
 
 def test_fhi_aims_single_atom_to_deeph(fhi_aims_data, tmp_path):
-    """Test FHI-aims single atom to DeepH format conversion"""
+    """Test FHI-aims cluster mode to DeepH format conversion"""
     input_dir = fhi_aims_data["input"]
     output_dir = tmp_path / "deeph_output"
     reference_dir = fhi_aims_data["reference"]
@@ -30,7 +30,7 @@ def test_fhi_aims_single_atom_to_deeph(fhi_aims_data, tmp_path):
     print(f"\n[tmp] Working directory: {tmp_path}")
 
     result = subprocess.run(
-        ["dock", "convert", "fhi-aims", "single-atom-to-deeph", str(input_dir), str(output_dir), "-t", "0"],
+        ["dock", "convert", "fhi-aims", "cluster-to-deeph", str(input_dir), str(output_dir), "-t", "0"],
         capture_output=True,
         text=True,
     )
@@ -51,10 +51,10 @@ def test_fhi_aims_single_atom_to_deeph(fhi_aims_data, tmp_path):
 def test_fhi_aims_cli_help():
     """Test FHI-aims CLI help command"""
     result = subprocess.run(
-        ["dock", "convert", "fhi-aims", "single-atom-to-deeph", "--help"],
+        ["dock", "convert", "fhi-aims", "cluster-to-deeph", "--help"],
         capture_output=True,
         text=True,
     )
 
     assert result.returncode == 0
-    assert "single-atom-to-deeph" in result.stdout
+    assert "cluster-to-deeph" in result.stdout

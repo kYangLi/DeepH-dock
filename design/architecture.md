@@ -1,7 +1,7 @@
 # System Architecture
 
 **Status**: ✅ Implemented  
-**Version**: 0.9.11  
+**Version**: 0.9.12  
 **Last Updated**: 2025-03-08
 
 ---
@@ -27,19 +27,19 @@ How to design a modular, extensible system that bridges multiple DFT software pa
 DeepH-dock uses a **four-layer modular architecture** with an **auto-registration CLI system**:
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                 CLI Layer (dock)                     │
-│         Auto-registration via decorators            │
-└────────────────┬────────────────────────────────────┘
+┌───────────────────────────────────────────────┐
+│               CLI Layer (dock)                │
+│       Auto-registration via decorators        │
+└────────────────┬──────────────────────────────┘
                  │
     ┌────────────┼────────────┬────────────┐
     │            │            │            │
-┌───▼───┐   ┌───▼───┐   ┌───▼───┐   ┌───▼───┐
-│convert│   │compute│   │analyze│   │design │
-└───┬───┘   └───┬───┘   └───┬───┘   └───┬───┘
+┌───▼───┐    ┌───▼───┐    ┌───▼───┐    ┌───▼───┐
+│convert│    │compute│    │analyze│    │design │
+└───┬───┘    └───┬───┘    └───┬───┘    └───┬───┘
     │            │            │            │
-┌───▼────────────▼────────────▼────────────▼───┐
-│         Unified Data Format Layer              │
+┌───▼────────────▼────────────▼────────────▼────┐
+│         Unified Data Format Layer             │
 │   (POSCAR + info.json + HDF5 matrices)        │
 └───────────────────────────────────────────────┘
 ```

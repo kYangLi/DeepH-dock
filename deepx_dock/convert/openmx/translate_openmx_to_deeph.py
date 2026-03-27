@@ -218,6 +218,7 @@ class OpenMXReader:
         self._read_scfout_info()
         self._read_out()
         self._read_scfout_matrix()
+        self._read_scfout_tail()
         # Dump data
         self._dump_info_json()
         self._dump_poscar()
@@ -413,8 +414,26 @@ class OpenMXReader:
             )
         else:
             raise ValueError(f'Invalid spin info: {self.spin_info}')
+        if 3 != self.spin_info:
+            self._skip_openmx_scfout_matrix() # Skip imaginary part
+            self._skip_openmx_scfout_matrix() # Skip imaginary part
         self.rho = self.basis_transform_to_wiki(self.rho, self.spinful)
         #-----------------------------------------------------------------------
+    
+    def _read_scfout_tail(self):
+        #-----------------------------------------------------------------------
+        _solver = int(self.scfout_reader.read('i')[0]) # eigenvalue solver
+        #-----------------------------------------------------------------------
+        _info = self.scfout_reader.read('10d') # others
+        _ChemP = _info[0] # fermi_energy in Hartree
+        _E_Temp = _info[1] # temperature in Kelvin
+        _dipole_moment_core = _info[2:5]
+        _dipole_moment_background = _info[5:8]
+        _Valence_Electrons = _info[8]
+        _Total_SpinS = _info[9]
+        #-----------------------------------------------------------------------
+        if abs(float(_ChemP) * HARTREE_TO_EV - self.fermi_energy) > 1e-6:
+            print(f"[warn] The fermi_energy stored in *.scfout is different from *.out ({float(_ChemP) * HARTREE_TO_EV} != {self.fermi_energy}).")
 
     def _read_out(self):
         #-----------------------------------------------------------------------

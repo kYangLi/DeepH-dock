@@ -30,6 +30,9 @@ def compare_h5_files(file1: Union[str, Path], file2: Union[str, Path], threshold
                 msg_parts.append(f"Keys missing in {file2}: {missing_in_2}")
             return False, "; ".join(msg_parts)
 
+        if "atom_pairs" in keys1 and "entries" in keys1:
+            return _compare_deeph_h5(f1, f2, threshold)
+
         for key in f1.keys():
             data1 = np.array(f1[key][()])
             data2 = np.array(f2[key][()])
@@ -44,6 +47,48 @@ def compare_h5_files(file1: Union[str, Path], file2: Union[str, Path], threshold
             else:
                 if not np.array_equal(data1, data2):
                     return False, f"Key {key} values differ"
+
+    return True, ""
+
+
+def _compare_deeph_h5(f1, f2, threshold: float) -> Tuple[bool, str]:
+    """Compare DeepH format HDF5 files with atom_pairs matching."""
+    ref_pairs = f1["atom_pairs"][:]
+    calc_pairs = f2["atom_pairs"][:]
+    ref_entries = f1["entries"][:]
+    calc_entries = f2["entries"][:]
+    ref_bounds = f1["chunk_boundaries"][:]
+    calc_bounds = f2["chunk_boundaries"][:]
+    ref_shapes = f1["chunk_shapes"][:]
+    calc_shapes = f2["chunk_shapes"][:]
+
+    if len(ref_pairs) != len(calc_pairs):
+        return False, f"Different number of pairs: {len(ref_pairs)} vs {len(calc_pairs)}"
+
+    ref_lookup = {}
+    for i, pair in enumerate(ref_pairs):
+        key = tuple(pair)
+        start, end = ref_bounds[i], ref_bounds[i + 1]
+        ref_lookup[key] = (ref_entries[start:end], tuple(ref_shapes[i]))
+
+    max_diff = 0.0
+    for i, pair in enumerate(calc_pairs):
+        key = tuple(pair)
+        if key not in ref_lookup:
+            return False, f"Pair {key} not found in reference"
+
+        start, end = calc_bounds[i], calc_bounds[i + 1]
+        calc_mat = calc_entries[start:end]
+        ref_mat, ref_shape = ref_lookup[key]
+        calc_shape = tuple(calc_shapes[i])
+
+        if ref_shape != calc_shape:
+            return False, f"Shape mismatch for {key}: {ref_shape} vs {calc_shape}"
+
+        diff = np.abs(ref_mat - calc_mat).max()
+        max_diff = max(max_diff, diff)
+        if diff > threshold:
+            return False, f"Entry diff for {key}: {diff:.2e} > {threshold:.2e}"
 
     return True, ""
 
