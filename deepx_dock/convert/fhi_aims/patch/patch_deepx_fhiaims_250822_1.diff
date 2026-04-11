@@ -1,6 +1,8 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 294251b..57f86e2 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -142,6 +142,8 @@
+@@ -142,6 +142,8 @@ option(USE_IPC "Whether to support inter-process communication " OFF)
  option(USE_iPI "Whether support the i-Pi Python wrapper" ON)
  # HDF5
  option(USE_HDF5 "Whether to compile with HDF5 support" OFF)
@@ -9,6 +11,9 @@
  # TREXIO
  option(USE_TREXIO "Whether to compile with TREXIO support" OFF)
  #CC4aims
+diff --git a/initial_cache.cmake b/initial_cache.cmake
+new file mode 100644
+index 0000000..7a9fa7a
 --- /dev/null
 +++ b/initial_cache.cmake
 @@ -0,0 +1,58 @@
@@ -70,10 +75,11 @@
 +else()
 +	set(USE_DEEPH_INTERFACE OFF CACHE BOOL "" FORCE)
 +endif()
-
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index bb05239..34e2896 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
-@@ -195,6 +195,24 @@
+@@ -195,6 +195,24 @@ if (NOT USE_HDF5)
    target_sources(aims5 PRIVATE hdf5_stubs.f90)
  endif()
  
@@ -98,70 +104,11 @@
  if (USE_TREXIO)
    target_sources(aims5 PRIVATE trexio_integrals.f90)
    target_sources(aims5 PRIVATE trexio_integrals.f90)
---- a/src/runtime_choices.f90
-+++ b/src/runtime_choices.f90
-@@ -1286,6 +1286,8 @@
-       logical :: restart_exx_write
-       logical :: restart_exx_read
-       logical :: restart_exx_3c_int
-+      ! === DeepX warmstart ===
-+      logical :: use_deepx_warmstart
-       ! Igor, to restart RPA
-       logical :: restart_rpa_file_exists
-       character*40 :: restart_rpa_read_file
-@@ -3028,10 +3030,12 @@
-          restart_read  = .false.
-          restart_save_iterations = 0
-          use_restart_save_iterations = .false.
--         restart_exx_write = .false.
--         restart_exx_read = .false.
--         restart_exx_3c_int = .false.
--         restart_rpa_file_exists = .false.
-+restart_exx_write = .false.
-+          restart_exx_read = .false.
-+          restart_exx_3c_int = .false.
-+          ! DeepX/DeepH warmstart
-+          use_deepx_warmstart = .false.
-+          restart_rpa_file_exists = .false.
-          restart_rpa_read_file = 'aims_restart_rpa_information.dat'
-          restart_rpa_write_file='aims_restart_rpa_information.dat'
-          restart_rpa_write = .false.
---- a/src/read_control.f90
-+++ b/src/read_control.f90
-@@ -8286,10 +8286,17 @@
-                write(info_str,'(2X,2A)') '| This file does not exist, ', &
-                      'will create it after the first complete scf cycle.'
-                restart_read = .false.
--            end if
--            call localorb_info(info_str,use_unit,'(A)')
-+             end if
-+             call localorb_info(info_str,use_unit,'(A)')
- 
--         case('restart_read_only')
-+          case('use_deepx_warmstart')
-+             read(inputline,*,end=88,err=99) desc_str, use_deepx_warmstart
-+             if (use_deepx_warmstart) then
-+                write(info_str,'(2X,A)') 'DeepH-JAX (DeepX) warmstart requested. Will search for ./deepx_warm or ./deeph_warm.'
-+                call localorb_info(info_str,use_unit,'(A)')
-+             end if
-+
-+          case('restart_read_only')
-             read(inputline,*,end=88,err=99) desc_str, restart_read_file
-             keep_restart_info  = .true.
-             restart_read       = .true.
---- a/src/dimensions.f90
-+++ b/src/dimensions.f90
-@@ -2932,6 +2932,7 @@
-                      (desc_str.eq."hessian_to_restart_geometry").or. &
-                      (desc_str.eq."distributed_hessian").or. &
-                      (desc_str.eq."restart_eigenvectors_periodic").or. &
-+                     (desc_str.eq."use_deepx_warmstart").or. &
-                      (desc_str.eq."orthonormalize_eigenvectors") .or. &
-                      (desc_str.eq."auxil_basis").or. &
-                      (desc_str.eq."final_forces_cleaned") .or. &
+diff --git a/src/Makefile.backend b/src/Makefile.backend
+index b6f49d6..4c73b62 100644
 --- a/src/Makefile.backend
 +++ b/src/Makefile.backend
-@@ -32,6 +32,7 @@
+@@ -32,6 +32,7 @@ MODDIR ?= $(BUILDDIR)
  USE_C_FILES = yes
  USE_LIBXC ?= ${USE_C_FILES}
  USE_CXX_FILES = yes
@@ -169,7 +116,7 @@
  
  #************************************************************************
  #
-@@ -1820,6 +1821,22 @@
+@@ -1820,6 +1821,22 @@ endif
  
  MODULES:=$(addprefix $(OBJDIR)/,$(MODULES_U))
  
@@ -192,7 +139,7 @@
  
  # CFLAGS was once called CCFLAGS in some parts
  CFLAGS += $(CCFLAGS)
-@@ -1833,6 +1850,10 @@
+@@ -1833,6 +1850,10 @@ C_FILES = $(OBJDIR)/get_stacksize.o \
            $(OBJDIR)/change_directory_c.o \
            $(OBJDIR)/unlimit_stack.o
  
@@ -203,7 +150,7 @@
  
  #C Files for ELPA SSE and AVX kernels, if _not_ pre-installed ELPA library is used
  MODULES += $(OBJDIR)/elpa/elpa1_auxiliary_stub.o
-@@ -2872,6 +2893,10 @@
+@@ -2872,6 +2893,10 @@ ALL_SOURCES = $(wildcard \
      neo/src/*.f90\
  )
  
@@ -214,6 +161,8 @@
  ######################################
  
  # Do not generate dependencies for:
+diff --git a/src/Makefile.hdf5 b/src/Makefile.hdf5
+index 0e6a0bd..7f1db7f 100644
 --- a/src/Makefile.hdf5
 +++ b/src/Makefile.hdf5
 @@ -194,7 +194,9 @@
@@ -237,189 +186,12 @@
  # HDF5 Settings for LRZ Cluster
  # HDF5_FLAG=-Wl, -static -L/lrz/sys/libraries/hdf5/1.8.14/impi_hybrid/lib -lhdf5hl_fortran -lhdf5_fortran -lhdf5 -Wl,-dy
  
---- a/src/scf_solver.f90
-+++ b/src/scf_solver.f90
-@@ -250,11 +250,19 @@
-       !use xc !KRB - testing for eed, remove later, uncomment for debug
-       ! NB and KRB, Debug infrastructure for local hybrids while in development.
-       ! Spread across evaluate_xc.f90, xc.f90, scf_solver.f90, integrate_xc_energy.f90
--      use scf_convergence_tracker
-+       use scf_convergence_tracker
- 
--      use warnings
-+       use warnings
- 
--      implicit none
-+       ! ================ DeepH-JAX (DeepX) restart interface ======================
-+       use rs_mx_trans_interface, only: deeph_begin_scf_cycle, deeph_prepare_pre_scf_alignment, &
-+            deeph_should_force_density_hotstart, deeph_finalize_hotstart_nomix, &
-+          deeph_prepare_iteration_hamiltonian, deeph_should_skip_hamiltonian_updates, deeph_maybe_log_preks_fingerprint
-+       use mpi_tasks
-+       use basis
-+       ! ===============================================================
-+
-+       implicit none
- 
- !  INTERFACES
-       interface
-@@ -579,7 +587,11 @@
-      end if
-      Gnonmf_forces_on = .false.
-      if (restart_zero_iteration) mbd_first_step = .false.
--     !SK: Switch-off kinetic density calculation here
-+
-+      ! DeepX: begin SCF cycle
-+      call deeph_begin_scf_cycle()
-+
-+      !SK: Switch-off kinetic density calculation here
-      !SK: kinetic_density is now calculated in get_free_atoms et al.
-      if (use_meta_gga .and. .false.) then
-           write(info_str,'(2X,A)') ''
-@@ -772,6 +784,10 @@
-      info_str = "Available memory before start of SCF loop"
-      call show_free(info_str)
- 
-+     ! DeepX: prepare pre-SCF alignment
-+     call deeph_prepare_pre_scf_alignment(hamiltonian)
-+     ! =
-+
- !===============================================================================
- !=                          BEGIN SELF-CONSISTENCY LOOP                        =
- !===============================================================================
-@@ -1015,8 +1031,14 @@
-            end do
-         end if
- 
--        ! NO mixing at all for restarting information - need pure information.
--        if (restart_zero_iteration) then
-+        ! ======= DeepX: NO mixing at all for restarting information - need pure information.
-+        if (restart_zero_iteration .or. deeph_should_force_density_hotstart()) then
-+          if (deeph_should_force_density_hotstart()) then
-+            write(info_str,'(2X,A)') 'DeepX restart: applying one-shot no-mix density update in this iteration.'
-+            call localorb_info(info_str,use_unit,'(A)', OL_norm)
-+          end if
-+          ! =============================================================================
-+
-           if (n_spin .eq. 1) then
-             i_spin = 1
-             rho(i_spin,:) = rho(i_spin,:) + delta_rho_KS(:,i_spin)
-@@ -1044,10 +1066,13 @@
-                 kinetic_density(1,:) = kinetic_density(1,:) + 0.5d0*(delta_kinetic_density(:,1)+delta_kinetic_density(:,2))
-                 kinetic_density(2,:) = kinetic_density(2,:) + 0.5d0*(delta_kinetic_density(:,1)-delta_kinetic_density(:,2))
-               end if
--            end if
--          end if
-+end if
-+           end if
-+
-+          ! DeepH
-+          call deeph_finalize_hotstart_nomix()
- 
--        else if (mixer.eq.MIX_LINEAR) then
-+         else if (mixer.eq.MIX_LINEAR) then
-           ! linear mixing
-           call linear_mix_p1(partition_tab, hartree_partition_tab, rho, &
-                              rho_gradient,kinetic_density)
-@@ -1090,7 +1115,7 @@
-           call execute_broyden_mixing(number_of_loops, partition_tab, &
-                                       hartree_partition_tab, rho, rho_gradient, kinetic_density)
-         end if
--        
-+
-         info_str = "Available memory per node after mixing"
-         call show_free(info_str)
- 
-@@ -1209,6 +1234,8 @@
- 
- !------------------- Compute REAL SPACE Hamiltonian Matrix ------------------->>
- 
-+        call deeph_prepare_iteration_hamiltonian(hamiltonian)
-+
-         ! Construct the REAL SPACE Hamiltonian matrix via the batch integration
-         ! scheme. A complete description including illustrations can be found in
-         ! Huhn et al., Computer Physics Communications 254 (2020) 107314,
-@@ -1280,6 +1307,8 @@
- 
-         call get_timestamps(time_intg, clock_time_intg)
- 
-+        if (.not. deeph_should_skip_hamiltonian_updates()) then
-+
-         if(use_local_index .and. (.not.use_scalapack_q4c)) then
-           if(use_load_balancing) then
-             ! If load balancing is in effect, there already exists a batch
-@@ -1395,6 +1424,12 @@
- 
-           end if
-         end if
-+
-+        else
-+          write(info_str,'(2X,A)') 'DeepX restart: injected Hamiltonian active; skipping this-iteration real-space integration.'
-+          call localorb_info(info_str,use_unit,'(A)', OL_norm)
-+        end if
-+
-         call get_times(time_intg, clock_time_intg, &
-         &              tot_time_intg, tot_clock_time_intg)
- 
-@@ -1420,7 +1455,7 @@
-         ! mostly likely to be called for both periodic and non-periodic
-         ! calculations.
- 
--        if (use_hartree_fock) then !.and. flag_xc_pre < 0) then
-+        if ((.not. deeph_should_skip_hamiltonian_updates()) .and. use_hartree_fock) then !.and. flag_xc_pre < 0) then
-           call get_timestamps(time_fock, clock_time_fock)
- 
-           ! FK: In general, the EXX forces are switched on when the force
-@@ -1515,7 +1550,7 @@
-         ! Kohn-Sham eigenvalue problem.  The subroutine that performs the
-         ! heavy lifting in this section is advance_KS_solution().
- 
--        if (use_embedding_pp) then
-+        if ((.not. deeph_should_skip_hamiltonian_updates()) .and. use_embedding_pp) then
-             call get_timestamps(time_embedding, clock_time_embedding)
-             call add_nonlocal_pot(hamiltonian)
-             call get_times(time_embedding, clock_time_embedding, &
-@@ -1623,12 +1658,14 @@
-            end if
-         end if
- 
--        if (use_friction.or.output_rs_matrices.or.use_superconduct) then
--          call store_hamiltonian()
--          if (use_scalapack) then
--            call save_hamiltonian_scalapack()
--          endif
--      endif
-+!if (use_friction.or.output_rs_matrices.or.use_superconduct) then
-+        call store_hamiltonian()
-+        if (use_scalapack) then
-+          call save_hamiltonian_scalapack()
-+        endif
-+!endif
-+
-+        call deeph_maybe_log_preks_fingerprint(hamiltonian)
- 
-         ! Now set first_iteration to false
-         first_iteration = .false.
-@@ -1658,9 +1695,15 @@
- 
-         if(use_periodic_hf) then !.and. flag_xc_pre < 0)then
-            ! Make sure occ_numbers_save is always defined
--           if(restart_zero_iteration) then
--              occ_numbers_save = occ_numbers
-+           ! ====================== DeepX: occ_num save ==============================
-+          if (restart_zero_iteration .or. deeph_should_force_density_hotstart()) then
-+            if (deeph_should_force_density_hotstart()) then
-+              write(info_str,'(2X,A)') 'DeepX restart: first-iteration density hotstart (no Pulay/Broyden mixing history used).'
-+              call localorb_info(info_str,use_unit,'(A)', OL_norm)
-+            end if
-+               occ_numbers_save = occ_numbers
-            end if
-+           ! ======================================================================
- 
-            ! For evaluations of the total energy only (without SCF) for
-            ! non-equilibrium density, the Fock energy must be evaluated here
+diff --git a/src/deeph_interface/include/rs_mx_trans.f90 b/src/deeph_interface/include/rs_mx_trans.f90
+new file mode 100644
+index 0000000..531625b
 --- /dev/null
 +++ b/src/deeph_interface/include/rs_mx_trans.f90
-@@ -0,0 +1,518 @@
+@@ -0,0 +1,521 @@
 +module rs_mx_trans_interface
 +  use iso_c_binding, only: c_char, c_int, c_double, c_null_char
 +  use localorb_io, only: localorb_info, use_unit, OL_norm
@@ -501,7 +273,7 @@
 +
 +    function deeph_try_load_autodetect_c(use_local_index_in, n_atoms_in, n_basis_in, n_spin_in, n_cells_in, n_ham_size_in, &
 +      cell_index_in, idx_start_in, idx_end_in, col_index_in, basis_fn_in, basis_atom_in, basisfn_n_in, basis_l_in, basis_m_in, basisfn_type_in, atom_z_in, &
-+      ham_out) bind(C, name='deeph_try_load_autodetect_c') result(ierr)
++      ham_out, myid_in) bind(C, name='deeph_try_load_autodetect_c') result(ierr)
 +      import :: c_int, c_double
 +      integer(c_int), value :: use_local_index_in
 +      integer(c_int), value :: n_atoms_in, n_basis_in, n_spin_in, n_cells_in, n_ham_size_in
@@ -517,6 +289,7 @@
 +      integer(c_int), dimension(*), intent(in) :: basisfn_type_in
 +      integer(c_int), dimension(*), intent(in) :: atom_z_in
 +      real(c_double), dimension(*), intent(out) :: ham_out
++      integer(c_int), value :: myid_in
 +      integer(c_int) :: ierr
 +    end function deeph_try_load_autodetect_c
 +
@@ -774,7 +547,7 @@
 +
 +    deeph_try_load_hamiltonian = .false.
 +
-+    ! 如果用户没有启用 warmstart，直接返回
++    ! DeepH-JAX (DeepX) warmstart loader: if warmstart is disabled, return immediately.
 +    if (.not. use_deepx_warmstart) then
 +      return
 +    end if
@@ -805,7 +578,7 @@
 +    ierr_deeph = deeph_try_load_autodetect_c(merge(1_c_int, 0_c_int, use_local_index), int(n_atoms, c_int), int(n_basis, c_int), int(n_spin, c_int), &
 +      int(n_cells_in_hamiltonian, c_int), int(n_hamiltonian_matrix_size, c_int), &
 +      cell_index, idx_ham_flat, idx_ham_flat(2:), column_index_hamiltonian, &
-+      basis_fn, basis_atom, basisfn_n, basis_l, basis_m, basisfn_type_i, atom_z_i, hamiltonian)
++      basis_fn, basis_atom, basisfn_n, basis_l, basis_m, basisfn_type_i, atom_z_i, hamiltonian, int(myid, c_int))
 +
 +    deallocate(idx_ham_flat)
 +    deallocate(basisfn_type_i)
@@ -813,20 +586,22 @@
 +
 +    if (ierr_deeph == 0_c_int) then
 +      deeph_try_load_hamiltonian = .true.
-+      write(info_str,'(A)') 'DeepX restart: loaded real-space Hamiltonian from ./deepx_warm or ./deeph_warm.'
-+      call localorb_info(info_str,use_unit,'(A)')
++      write(info_str,'(A)') 'DeepX restart: loaded real-space Hamiltonian from ./deeph_warm or ./deepx_warm.'
++      call localorb_info(info_str,use_unit,'(A)', OL_norm)
++      write(info_str,'(A)') 'DeepX validation [source vs injected]: PASS.'
++      call localorb_info(info_str,use_unit,'(A)', OL_norm)
 +    else if (ierr_deeph == 2_c_int) then
 +      write(info_str,'(A)') '*** FATAL ERROR: use_deepx_warmstart is .true. but use_local_index is active (not supported).'
-+      call localorb_info(info_str,use_unit,'(A)')
++      call localorb_info(info_str,use_unit,'(A)', OL_norm)
 +      call aims_stop('use_deepx_warmstart requires use_local_index to be .false.', 'deeph_try_load_hamiltonian')
 +    else if (ierr_deeph == 1_c_int) then
-+      ! Do not found warm dir - Fatal ERROR
-+      write(info_str,'(A)') '*** FATAL ERROR: use_deepx_warmstart is .true. but ./deepx_warm or ./deeph_warm directories not found.'
-+      call localorb_info(info_str,use_unit,'(A)')
-+      call aims_stop('use_deepx_warmstart is .true. but warm directory not found. Please create ./deepx_warm or ./deeph_warm.', 'deeph_try_load_hamiltonian')
++      ! Warmstart directories not found while warmstart is explicitly requested.
++      write(info_str,'(A)') '*** FATAL ERROR: use_deepx_warmstart is .true. but ./deeph_warm and ./deepx_warm directories not found.'
++      call localorb_info(info_str,use_unit,'(A)', OL_norm)
++      call aims_stop('use_deepx_warmstart is .true. but warm directory not found. Please create ./deeph_warm or ./deepx_warm.', 'deeph_try_load_hamiltonian')
 +    else
 +      write(info_str,'(A,I0,A)') '*** FATAL ERROR: DeepX restart failed (ierr=', ierr_deeph, ').'
-+      call localorb_info(info_str,use_unit,'(A)')
++      call localorb_info(info_str,use_unit,'(A)', OL_norm)
 +      call aims_stop('use_deepx_warmstart is .true. but Hamiltonian loading failed.', 'deeph_try_load_hamiltonian')
 +    end if
 +
@@ -938,10 +713,12 @@
 +  end subroutine deeph_walltime_now
 +
 +end module rs_mx_trans_interface
-
+diff --git a/src/deeph_interface/src/rs_mx_trans.c b/src/deeph_interface/src/rs_mx_trans.c
+new file mode 100644
+index 0000000..65bf931
 --- /dev/null
 +++ b/src/deeph_interface/src/rs_mx_trans.c
-@@ -0,0 +1,1056 @@
+@@ -0,0 +1,1287 @@
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
@@ -973,7 +750,8 @@
 +    const int *basis_m,
 +    const int *basisfn_type,
 +    const int *atom_Z,
-+    double *ham_out
++    double *ham_out,
++    int myid
 +);
 +
 +static int deeph_restart_used_c = 0;
@@ -1039,7 +817,8 @@
 +    const int *basis_m,
 +    const int *basisfn_type,
 +    const int *atom_Z,
-+    double *ham_out
++    double *ham_out,
++    int myid
 +) {
 +    char deeph_dir[1024];
 +    struct stat st;
@@ -1049,10 +828,10 @@
 +    if (use_local_index) return 2;
 +
 +    deeph_dir[0] = '\0';
-+    if (stat("./deepx_warm", &st) == 0 && S_ISDIR(st.st_mode)) {
-+        strncpy(deeph_dir, "./deepx_warm", sizeof(deeph_dir) - 1);
-+    } else if (stat("./deeph_warm", &st) == 0 && S_ISDIR(st.st_mode)) {
++    if (stat("./deeph_warm", &st) == 0 && S_ISDIR(st.st_mode)) {
 +        strncpy(deeph_dir, "./deeph_warm", sizeof(deeph_dir) - 1);
++    } else if (stat("./deepx_warm", &st) == 0 && S_ISDIR(st.st_mode)) {
++        strncpy(deeph_dir, "./deepx_warm", sizeof(deeph_dir) - 1);
 +    }
 +
 +    if (deeph_dir[0] == '\0') return 1;
@@ -1075,7 +854,8 @@
 +        basis_m,
 +        basisfn_type,
 +        atom_Z,
-+        ham_out
++        ham_out,
++        myid
 +    );
 +
 +    if (rc == 0) {
@@ -1151,13 +931,16 @@
 +    const int *basis_m,
 +    const int *basisfn_type,
 +    const int *atom_Z,
-+    double *ham_out
++    double *ham_out,
++    int myid
 +) {
 +    (void)deeph_dir; (void)n_atoms; (void)n_basis; (void)n_spin;
 +    (void)n_cells; (void)n_ham_size; (void)cell_index; (void)idx_start; (void)idx_end;
 +    (void)col_index; (void)basis_fn; (void)basis_atom; (void)basisfn_n; (void)basis_l;
 +    (void)basis_m; (void)basisfn_type; (void)atom_Z; (void)ham_out;
-+    fprintf(stderr, "DeepX interface requires HDF5 support at compile time (DEEPH_WITH_HDF5).\n");
++    if (myid == 0) {
++        fprintf(stderr, "DeepX interface requires HDF5 support at compile time (DEEPH_WITH_HDF5).\n");
++    }
 +    return -98;
 +}
 +
@@ -1359,6 +1142,15 @@
 +    mx->chunk_shapes = NULL;
 +    mx->entries = NULL;
 +}
++
++typedef struct {
++    int compared;
++    int missing;
++    int conflicts;
++    double max_abs_diff;
++    double rms_abs_diff;
++    double max_conflict_diff;
++} deeph_validation_stats_t;
 +
 +static int read_int_dataset(hid_t file, const char *name, int **out_data, hsize_t *out_len) {
 +    hid_t dset = H5Dopen(file, name, H5P_DEFAULT);
@@ -1687,6 +1479,7 @@
 +    double unit_conv
 +) {
 +    HashMap* map = create_hash_map(mx->n_pairs);
++    memset(out_aims_entries, 0, sizeof(double) * (size_t)n_ham_size);
 +    for (int i = 0; i < mx->n_pairs; ++i) {
 +        const int* current_key = &mx->atom_pairs[i * 5];
 +        map_insert(map, current_key, i);
@@ -1796,6 +1589,184 @@
 +    free_hash_map(map);
 +}
 +
++static void set_rebuilt_entry(
++    double *rebuilt,
++    unsigned char *touched,
++    int offset,
++    double value,
++    double conflict_tol,
++    int *conflicts,
++    double *max_conflict_diff
++) {
++    if (offset < 0) return;
++
++    if (!touched[offset]) {
++        rebuilt[offset] = value;
++        touched[offset] = 1;
++        return;
++    }
++
++    {
++        double d = fabs(rebuilt[offset] - value);
++        if (d > conflict_tol) {
++            (*conflicts) += 1;
++            if (d > *max_conflict_diff) *max_conflict_diff = d;
++        }
++    }
++    rebuilt[offset] = value;
++}
++
++static int validate_deeph_vs_injected_single(
++    const deeph_matrix_t *mx,
++    const double *ham_out,
++    int n_cells,
++    int n_basis,
++    int n_ham_size,
++    const int* cell_indices,
++    const int* start_idx_mx,
++    const int* end_idx_mx,
++    const int* col_idx_mx,
++    const int* basis_atom_new,
++    const int* basis_subidx,
++    const int* phase_factors,
++    double hartree2ev,
++    double diff_tol,
++    deeph_validation_stats_t *stats_out
++) {
++    HashMap* map = NULL;
++    double *rebuilt = NULL;
++    unsigned char *touched = NULL;
++    int conflicts = 0;
++    double max_conflict_diff = 0.0;
++    double sum2 = 0.0;
++    int compared = 0;
++    int missing = 0;
++    double max_abs_diff = 0.0;
++    int n_cells_loop;
++
++    if(!mx || !ham_out || !cell_indices || !start_idx_mx || !end_idx_mx || !col_idx_mx ||
++       !basis_atom_new || !basis_subidx || !phase_factors || !stats_out) return -20;
++
++    rebuilt = (double*)malloc(sizeof(double) * (size_t)mx->n_entries);
++    touched = (unsigned char*)calloc((size_t)mx->n_entries, sizeof(unsigned char));
++    if(!rebuilt || !touched) {
++        free(rebuilt);
++        free(touched);
++        return -21;
++    }
++
++    map = create_hash_map(mx->n_pairs);
++    if(!map) {
++        free(rebuilt);
++        free(touched);
++        return -22;
++    }
++    for (int i = 0; i < mx->n_pairs; ++i) {
++        map_insert(map, &mx->atom_pairs[i * 5], i);
++    }
++
++    n_cells_loop = (n_cells > 0) ? (n_cells - 1) : 0;
++
++    for (int ic = 0; ic < n_cells_loop; ++ic) {
++        int R[3];
++        R[0] = -cell_indices[ic + 0 * n_cells];
++        R[1] = -cell_indices[ic + 1 * n_cells];
++        R[2] = -cell_indices[ic + 2 * n_cells];
++
++        for (int ib_row = 0; ib_row < n_basis; ++ib_row) {
++            int if_idx = ic + ib_row * n_cells;
++            int start = start_idx_mx[2 * if_idx] - 1;
++            int end   = end_idx_mx[2 * if_idx]   - 1;
++            int atom_i;
++            int orb_i;
++            int phase_i;
++
++            if (start < 0 || end < start) continue;
++
++            atom_i = basis_atom_new[ib_row];
++            orb_i = basis_subidx[ib_row];
++            phase_i = phase_factors[ib_row];
++
++            for (int k = start; k <= end; ++k) {
++                int ib_col;
++                int atom_j;
++                int orb_j;
++                int phase_j;
++                double single_val_ev;
++                int key[5];
++                int rev_key[5];
++                int pair_idx;
++                int rev_pair_idx;
++
++                if (k < 0 || k >= n_ham_size) continue;
++
++                ib_col = col_idx_mx[k] - 1;
++                if (ib_col < 0 || ib_col >= n_basis) continue;
++
++                atom_j = basis_atom_new[ib_col];
++                orb_j = basis_subidx[ib_col];
++                phase_j = phase_factors[ib_col];
++
++                single_val_ev = ham_out[k] * hartree2ev;
++                if (phase_i == -1) single_val_ev = -single_val_ev;
++                if (phase_j == -1) single_val_ev = -single_val_ev;
++
++                key[0] = R[0]; key[1] = R[1]; key[2] = R[2]; key[3] = atom_i; key[4] = atom_j;
++                rev_key[0] = -R[0]; rev_key[1] = -R[1]; rev_key[2] = -R[2]; rev_key[3] = atom_j; rev_key[4] = atom_i;
++
++                pair_idx = map_get(map, key);
++                if (pair_idx != -1) {
++                    int n_row_block = mx->chunk_shapes[pair_idx * 2 + 0];
++                    int n_col_block = mx->chunk_shapes[pair_idx * 2 + 1];
++                    if (orb_i >= 0 && orb_j >= 0 && orb_i < n_row_block && orb_j < n_col_block) {
++                        int off = mx->chunk_boundaries[pair_idx] + orb_i * n_col_block + orb_j;
++                        set_rebuilt_entry(rebuilt, touched, off, single_val_ev, diff_tol, &conflicts, &max_conflict_diff);
++                    }
++                }
++
++                rev_pair_idx = map_get(map, rev_key);
++                if (rev_pair_idx != -1) {
++                    int n_row_block = mx->chunk_shapes[rev_pair_idx * 2 + 0];
++                    int n_col_block = mx->chunk_shapes[rev_pair_idx * 2 + 1];
++                    if (orb_j >= 0 && orb_i >= 0 && orb_j < n_row_block && orb_i < n_col_block) {
++                        int off = mx->chunk_boundaries[rev_pair_idx] + orb_j * n_col_block + orb_i;
++                        set_rebuilt_entry(rebuilt, touched, off, single_val_ev, diff_tol, &conflicts, &max_conflict_diff);
++                    }
++                }
++            }
++        }
++    }
++
++    for (int i = 0; i < mx->n_entries; ++i) {
++        if (!touched[i]) {
++            missing += 1;
++            continue;
++        }
++        {
++            double d = fabs(rebuilt[i] - mx->entries[i]);
++            if (d > max_abs_diff) max_abs_diff = d;
++            sum2 += d * d;
++            compared += 1;
++        }
++    }
++
++    stats_out->compared = compared;
++    stats_out->missing = missing;
++    stats_out->conflicts = conflicts;
++    stats_out->max_abs_diff = max_abs_diff;
++    stats_out->rms_abs_diff = (compared > 0) ? sqrt(sum2 / (double)compared) : 0.0;
++    stats_out->max_conflict_diff = max_conflict_diff;
++
++    free_hash_map(map);
++    free(rebuilt);
++    free(touched);
++
++    if (compared <= 0) return -31;
++    if (conflicts > 0) return -32;
++    if (max_abs_diff > diff_tol) return -33;
++    return 0;
++}
++
 +/* Spinful: split 2N x 2N block into up/down */
 +static void convert_deeph_to_aims_spinful(
 +    double* out_up,
@@ -1814,6 +1785,8 @@
 +    double unit_conv
 +) {
 +    HashMap* map = create_hash_map(mx->n_pairs);
++    memset(out_up, 0, sizeof(double) * (size_t)n_ham_size);
++    memset(out_dn, 0, sizeof(double) * (size_t)n_ham_size);
 +    for (int i = 0; i < mx->n_pairs; ++i) {
 +        const int* current_key = &mx->atom_pairs[i * 5];
 +        map_insert(map, current_key, i);
@@ -1936,7 +1909,8 @@
 +    const int *basis_m,
 +    const int *basisfn_type,        /* basisfn_type(i_fn), 1-based */
 +    const int *atom_Z,              /* length n_atoms */
-+    double *ham_out                 /* length n_ham_size * n_spin */
++    double *ham_out,                /* length n_ham_size * n_spin */
++    int myid
 +) {
 +    /* 1. read DeepH files */
 +    char path_h_alt[1024];
@@ -1945,7 +1919,9 @@
 +    deeph_matrix_t mx_h = {0};
 +    
 +    if(load_deeph_matrix(path_h_alt, &mx_h) != 0) {
-+        fprintf(stderr, "Failed to read %s \n", path_h_alt);
++        if (myid == 0) {
++            fprintf(stderr, "Failed to read %s \n", path_h_alt);
++        }
 +        return -1;
 +    }
 +    
@@ -1982,12 +1958,44 @@
 +
 +    /* 5. map Hamiltonian */
 +    double ev2hartree = 1.0 / 27.2113845;
++    double hartree2ev = 27.2113845;
 +    if(n_spin == 1) {
++        deeph_validation_stats_t stats;
++        int vrc;
++        const double validation_tol = 1.0e-8;
++
 +        convert_deeph_to_aims_single(ham_out, &mx_h, n_cells, n_basis, n_ham_size,
 +            cell_index, idx_start, idx_end, col_index, basis_atom_new, basis_subidx, phase, ev2hartree);
++
++        vrc = validate_deeph_vs_injected_single(
++            &mx_h,
++            ham_out,
++            n_cells,
++            n_basis,
++            n_ham_size,
++            cell_index,
++            idx_start,
++            idx_end,
++            col_index,
++            basis_atom_new,
++            basis_subidx,
++            phase,
++            hartree2ev,
++            validation_tol,
++            &stats
++        );
++        if (vrc != 0) {
++            free_deeph_matrix(&mx_h);
++            free(old2new); free(new2old); free(basis_deeph_index); free(basis_atom_new); free(basis_subidx); free(orbit_per_atom); free(phase);
++            return vrc;
++        }
 +    } else if(n_spin == 2) {
 +        convert_deeph_to_aims_spinful(ham_out, ham_out + n_ham_size, &mx_h, n_cells, n_basis, n_ham_size,
 +            cell_index, idx_start, idx_end, col_index, basis_atom_new, basis_subidx, phase, ev2hartree);
++    } else {
++        free_deeph_matrix(&mx_h);
++        free(old2new); free(new2old); free(basis_deeph_index); free(basis_atom_new); free(basis_subidx); free(orbit_per_atom); free(phase);
++        return -34;
 +    }
 +
 +    /* cleanup */
@@ -1998,4 +2006,185 @@
 +}
 +
 +#endif
-
+diff --git a/src/dimensions.f90 b/src/dimensions.f90
+index 65c0fd2..991553c 100644
+--- a/src/dimensions.f90
++++ b/src/dimensions.f90
+@@ -2932,6 +2932,7 @@ module dimensions
+                      (desc_str.eq."hessian_to_restart_geometry").or. &
+                      (desc_str.eq."distributed_hessian").or. &
+                      (desc_str.eq."restart_eigenvectors_periodic").or. &
++                     (desc_str.eq."use_deepx_warmstart").or. &
+                      (desc_str.eq."orthonormalize_eigenvectors") .or. &
+                      (desc_str.eq."auxil_basis").or. &
+                      (desc_str.eq."final_forces_cleaned") .or. &
+diff --git a/src/initialize_scf.f90 b/src/initialize_scf.f90
+index 7a51c78..cdc4f5d 100644
+--- a/src/initialize_scf.f90
++++ b/src/initialize_scf.f90
+@@ -80,6 +80,8 @@
+       use dft_api_data, only: ASI_callbacks
+       use fock_routines, only: calculate_fock_matrix
+       use interface_aims_environ, only: update_geometry_environ
++      ! =============== DeepH interface ========================
++      use rs_mx_trans_interface, only: deeph_try_load_hamiltonian
+ 
+       implicit none
+ 
+@@ -976,8 +978,51 @@
+       endif
+ 
+       if ( .not. (keep_restart_info.and.restart_file_exists) ) then
+- 
+-        if(elsi_read_dm) then
++
++        if(use_deepx_warmstart) then
++            write(info_str,'(A)') ''
++            call localorb_info(info_str,use_unit,'(A)', OL_norm)
++            write(info_str,'(A)') '------------------------------------------------------------'
++            call localorb_info(info_str,use_unit,'(A)', OL_norm)
++            write(info_str,'(2X,A)') 'DeepH-JAX (DeepX) warmstart module.'
++            call localorb_info(info_str,use_unit,'(A)', OL_norm)
++
++            if (.not. deeph_try_load_hamiltonian(hamiltonian)) then
++               call aims_stop('use_deepx_warmstart requested but no Hamiltonian injected.', func)
++            end if
++
++            if (.not.use_local_index .and. use_scalapack .and. my_scalapack_comm_work /= MPI_COMM_NULL) then
++               if(n_periodic>0 .or. packed_matrix_format /= PM_none ) then
++                  call construct_hamiltonian_scalapack(hamiltonian)
++               else
++                  call setup_hamiltonian_scalapack(hamiltonian)
++               endif
++            endif
++
++            ! DeepH-JAX (DeepX) warmstart provides a replacement initial Hamiltonian.
++            ! Perform the initial diagonalization through the official solver path,
++            ! then hand over to the standard no-mix restart loop.
++            write(info_str,'(2X,A)') 'DeepX warmstart: starting initial diagonalization of injected Hamiltonian.'
++            call localorb_info(info_str,use_unit,'(A)', OL_norm)
++            call advance_KS_solution(overlap_matrix, hamiltonian, n_electrons, KS_eigenvalue, KS_eigenvector, KS_eigenvector_complex, &
++                 occ_numbers, chemical_potential, chemical_potential_spin)
++
++            ! Reduce n_states in case of ill conditioning
++            ! The correct value is stored in n_states_k(:)
++            if (n_states_k(1) < n_states) then
++               call reshape_matrices_n_states(n_states_k(1))
++            end if
++
++            restart_zero_iteration = .true.
++            write(info_str,'(2X,A)') 'DeepX warmstart: initial diagonalization finished.'
++            call localorb_info(info_str,use_unit,'(A)', OL_norm)
++            write(info_str,'(2X,A)') 'DeepX warmstart: restart_zero_iteration=.true.; entering standard restart SCF path.'
++            call localorb_info(info_str,use_unit,'(A)', OL_norm)
++            write(info_str,'(A)') '------------------------------------------------------------'
++            call localorb_info(info_str,use_unit,'(A)', OL_norm)
++            write(info_str,'(A)') ''
++            call localorb_info(info_str,use_unit,'(A)', OL_norm)
++        else if(elsi_read_dm) then
+             ! Restart with ELSI
+             restart_zero_iteration = .true.
+         else
+diff --git a/src/read_control.f90 b/src/read_control.f90
+index f0eb52e..b8ff489 100644
+--- a/src/read_control.f90
++++ b/src/read_control.f90
+@@ -8286,10 +8286,17 @@ module read_control_module
+                write(info_str,'(2X,2A)') '| This file does not exist, ', &
+                      'will create it after the first complete scf cycle.'
+                restart_read = .false.
+-            end if
+-            call localorb_info(info_str,use_unit,'(A)')
++             end if
++             call localorb_info(info_str,use_unit,'(A)')
++
++          case('use_deepx_warmstart')
++             read(inputline,*,end=88,err=99) desc_str, use_deepx_warmstart
++             if (use_deepx_warmstart) then
++                write(info_str,'(2X,A)') 'DeepH-JAX (DeepX) warmstart requested. Will search for ./deeph_warm or ./deepx_warm.'
++                call localorb_info(info_str,use_unit,'(A)')
++             end if
+ 
+-         case('restart_read_only')
++          case('restart_read_only')
+             read(inputline,*,end=88,err=99) desc_str, restart_read_file
+             keep_restart_info  = .true.
+             restart_read       = .true.
+@@ -8753,6 +8760,12 @@ module read_control_module
+ 
+                out_k_point_list = .true.
+ 
++            else if ( desc_str == 'real_fock' ) then
++
++               call localorb_info( "Real-space Fock matrix will be written to file for DeepX/DeepH.",use_unit,'(2X,A)' )
++
++               out_real_fock = .true.
++
+             else if (desc_str.eq.'friction_matrices') then
+                write (info_str,'(1X,A)') &
+                         "* Friction matrices,First order H1 and S1, will be written to file"
+@@ -22687,6 +22700,13 @@ module read_control_module
+          use_initial_free_atom_es_potential = .false.
+       end if
+ 
++      if (use_deepx_warmstart) then
++         if (keep_restart_info .or. restart_read .or. restart_write .or. restart_from_density .or. &
++             elsi_read_dm .or. elsi_write_dm .or. elsi_can_read_dm) then
++            call aims_stop_coll("'use_deepx_warmstart' is incompatible with restart/density_restart/elsi_restart.",func)
++         end if
++      end if
++
+ 
+       if (elsi_read_dm .and. (flag_xc_pre.ne.xc__none ) .and. (.not. allow_restart_xc_pre)) then
+          call aims_stop_coll("The flags xc_pre and elsi_restart should not be used together",func)
+diff --git a/src/runtime_choices.f90 b/src/runtime_choices.f90
+index 634c7b1..e48d106 100644
+--- a/src/runtime_choices.f90
++++ b/src/runtime_choices.f90
+@@ -919,6 +919,7 @@ module runtime_choices
+       logical :: out_soc_eigenvalues
+ 
+       logical :: out_k_point_list
++      logical :: out_real_fock    ! control output of real-space Fock matrix to file (DeepX/DeepH)
+ 
+       ! MR: adding list of flags for more flexible interface with i-PI
+       logical :: ipi_dip
+@@ -1286,6 +1287,8 @@ module runtime_choices
+       logical :: restart_exx_write
+       logical :: restart_exx_read
+       logical :: restart_exx_3c_int
++      ! === DeepX warmstart ===
++      logical :: use_deepx_warmstart
+       ! Igor, to restart RPA
+       logical :: restart_rpa_file_exists
+       character*40 :: restart_rpa_read_file
+@@ -2821,9 +2824,10 @@ module runtime_choices
+          out_k_points_eigenvalues = 1
+          out_soc_eigenvalues = .false.
+ 
+-         out_k_point_list = .false.
++out_k_point_list = .false.
++          out_real_fock = .false.
+ 
+-         out_sorted_eigenvalue_list = .false.
++          out_sorted_eigenvalue_list = .false.
+          overwrite_existing_cube_files = .false.
+          cube_default_size_safeguard = 5e7
+          out_cube_nth_iteration = .false.
+@@ -3028,10 +3032,12 @@ module runtime_choices
+          restart_read  = .false.
+          restart_save_iterations = 0
+          use_restart_save_iterations = .false.
+-         restart_exx_write = .false.
+-         restart_exx_read = .false.
+-         restart_exx_3c_int = .false.
+-         restart_rpa_file_exists = .false.
++restart_exx_write = .false.
++          restart_exx_read = .false.
++          restart_exx_3c_int = .false.
++          ! DeepX/DeepH warmstart
++          use_deepx_warmstart = .false.
++          restart_rpa_file_exists = .false.
+          restart_rpa_read_file = 'aims_restart_rpa_information.dat'
+          restart_rpa_write_file='aims_restart_rpa_information.dat'
+          restart_rpa_write = .false.

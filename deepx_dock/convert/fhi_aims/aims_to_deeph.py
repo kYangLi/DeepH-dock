@@ -89,11 +89,13 @@ basis ref:
 HARTREE_TO_EV = 27.2113845 # 27.211386
 
 DEEPX_ELECTRIC_RESPONSE_FILENAME = "electric_response.h5"
+DEEPX_MOMENTUM_FILENAME = "momentum.h5"
 
 AIMS_CONTROL_FILENAME = "control.in"
 AIMS_STRUCT_FILENAME = "geometry.in"
 AIMS_BASIS_FILENAME = "basis-indices.out"
 FILES_MX_IDX = "rs_indices.out"
+FILES_MX_IDX_NOSYMM = "rs_indices_nosymm.out"
 FILES_NECESSARY = set([AIMS_CONTROL_FILENAME, AIMS_STRUCT_FILENAME, AIMS_BASIS_FILENAME, FILES_MX_IDX])
 FILES_LOG = 'aims.out'
 FILES_IN = ["rs_overlap.out", "rs_hamiltonian.out"]
@@ -101,6 +103,7 @@ FILES_IN_SPIN = ["rs_overlap.out", "rs_hamiltonian_up.out", "rs_hamiltonian_dn.o
 FILES_IN_HDF5 = ["rs_overlap.h5", "rs_hamiltonian.h5"]
 FILES_IN_SPIN_HDF5 = ["rs_overlap.h5", "rs_hamiltonian_up.h5", "rs_hamiltonian_down.h5"]
 FILES_IN_ELECTRIC_RESPONSE = ["first_order_H_sparse_coord_2_spin_1.dat", "first_order_H_sparse_coord_3_spin_1.dat", "first_order_H_sparse_coord_1_spin_1.dat"]
+FILES_IN_MOMENTUM = ["rs_momentum_matrix2.dat", "rs_momentum_matrix3.dat", "rs_momentum_matrix1.dat"]
 FILES_OUT = [DEEPX_HAMILTONIAN_FILENAME, DEEPX_OVERLAP_FILENAME]
 UNITS = [HARTREE_TO_EV, 1.0]
 BASIS_TYPE_ORDER = {'ionic': 0, 'atomic': 1, 'hydro': 2}  # for sorting basis types
@@ -127,6 +130,21 @@ def _read_ctrl_in(aims_dir_path: Path):
 
     return ctrl_params, spinful, aims_data_type.lower()
 
+
+def _map_positions_to_center_cell(site_positions: np.ndarray, lat: np.ndarray, eps: float = 1e-8):
+        """
+        Mimic FHI-aims map_to_center_cell behavior for periodic coordinates:
+            frac <- frac - eps
+            frac <- frac - nint(frac)
+            frac <- frac + eps
+        """
+        map_to_center_cell_matrix = np.linalg.inv(lat)
+        frac = site_positions @ map_to_center_cell_matrix
+        frac = frac - eps
+        frac = frac - np.rint(frac)
+        frac = frac + eps
+        return frac @ lat
+
 def _parse_struct(aims_dir_path: Path):
     atoms_path = Path(aims_dir_path) / AIMS_STRUCT_FILENAME
     atoms = read(atoms_path)
@@ -139,8 +157,13 @@ def _parse_struct(aims_dir_path: Path):
         lat = np.array([[5.2917721e8,0,0],[0,5.2917721e8,0],[0,0,5.2917721e8]])
     
     site_positions = atoms.get_positions()
+    if is_periodic:
+        site_positions = _map_positions_to_center_cell(site_positions, lat)
     element = atoms.get_atomic_numbers()
     species = atoms.get_chemical_symbols()
+
+    # Calculate the total number of electrons (occupation)
+    total_occupation_num = int(np.sum(np.asarray(element, dtype=int)))
 
     # Sort atoms to match VASP POSCAR grouping requirement
     # Sort by species to ensure grouped elements (e.g. all C, then all H)
@@ -150,7 +173,7 @@ def _parse_struct(aims_dir_path: Path):
     element = element[sort_idxs]
     species = [species[i] for i in sort_idxs]
 
-    return is_periodic, lat, site_positions, element, species, sort_idxs
+    return is_periodic, lat, site_positions, element, species, sort_idxs, total_occupation_num
 
 def _check_and_fix_basis_idx(aims_dir_path: Path):
     '''
@@ -284,8 +307,9 @@ def _parse_basis(aims_dir_path: Path, atomic_num: int, species: list[str], sort_
                                 basis_indices[old_idx,2], basis_indices[old_idx,4]
         basis_trans_index[atom_index].append(old_idx)
         orb_type:str = basis_types[old_idx]
-        if f"{orb_type},{n},{ll}" not in _elem_orb_map[atom_index]:
-                _elem_orb_map[atom_index].append(f"{orb_type},{n},{ll}")
+        #if f"{orb_type},{n},{ll}" not in _elem_orb_map[atom_index]:
+        if ll == - m:
+            _elem_orb_map[atom_index].append(f"{orb_type},{n},{ll}")
 
     for atom_idx, orb_map in _elem_orb_map.items():
         elem = species[atom_idx]
@@ -305,7 +329,7 @@ def _parse_basis(aims_dir_path: Path, atomic_num: int, species: list[str], sort_
     # BE CAREFUL: the phase_factor is corresponding to the old basis order
     return phase_factor, orbit_quantity_list, atom_elem_dict, elem_orb_map, basis_trans_index, N_atom, N_orb, sub_idx
 
-def _read_mx_indices(aims_dir_path: Path):
+def _read_mx_indices(aims_dir_path: Path, symm: bool = True):
     '''
     type of rs_indices.out:
     <not a comment line>
@@ -325,7 +349,11 @@ column_index_hamiltonian
     and the last of the column_index_hamiltonian is 0
     thus the last line of the (1,:,:), (2,:,:) and col_idx is useless
     '''
-    mx_idx_path = Path(aims_dir_path) / FILES_MX_IDX
+    if symm:
+        mx_idx_path = Path(aims_dir_path) / FILES_MX_IDX
+    else:
+        mx_idx_path = Path(aims_dir_path) / FILES_MX_IDX_NOSYMM
+    
     with open(mx_idx_path, 'r') as f:
         lines = f.readlines()
     
@@ -376,15 +404,15 @@ column_index_hamiltonian
         col_idx[i] = int(col_idx_line[0])
         idx_line += 1
 
-    if np.asarray(cell_indices[-1], dtype=int).sum() > 99999:
-        n_cells -= 1
-        cell_indices = cell_indices[:-1]
-        start_idx_matrix = start_idx_matrix[:-1, :]
-        end_idx_matrix = end_idx_matrix[:-1, :]
 
-    if col_idx[-1] == 0:
-        col_idx = col_idx[:-1]
-        n_ham_size -= 1
+    n_cells -= 1
+    cell_indices = cell_indices[:-1]
+    start_idx_matrix = start_idx_matrix[:-1, :]
+    end_idx_matrix = end_idx_matrix[:-1, :]
+
+
+    col_idx = col_idx[:-1]
+    n_ham_size -= 1
 
     # fortran to python index
     start_idx_matrix -= 1   # be careful with the index -1 is original 0
@@ -397,23 +425,7 @@ column_index_hamiltonian
 
 def _read_mx_val(file_path: Path, n_ham_size: int):
     # file type: txt, n_ham_size lines, each line: value, float64
-    def fix_float(s):
-        # if has xxx-310 without 'e' or 'E'
-        if ('e' not in s.lower()) and '-' in s[1:]:
-            # last '-'
-            idx = s.rfind('-')
-            if idx > 0:
-                return float(s[:idx] + 'e' + s[idx:])
-        return float(s)
-    
-    try:
-        mx_values = np.loadtxt(file_path, dtype=np.float64)
-    except ValueError:
-        mx_values = []
-        with open(file_path, 'r') as f:
-            for line in f:
-                mx_values.append(fix_float(line.strip()))
-        mx_values = np.array(mx_values, dtype=np.float64)
+    mx_values = np.loadtxt(file_path, dtype=np.float64)
 
     if mx_values.shape[0] == n_ham_size + 1:
         # Check if the extra value is indeed zero-padding (common in some aims outputs)
@@ -452,6 +464,13 @@ def _read_electric_response(aims_dir_path: Path, n_ham_size: int):
         filepath = aims_dir_path / in_path
         first_order_matrices.append(_read_mx_val(filepath, n_ham_size) * HARTREE_TO_EV)
     return first_order_matrices
+
+def _read_momentum_matrix_nosymm(aims_dir_path: Path, n_ham_size_nosymm: int):
+    momentum_matrices: list[np.ndarray] = []
+    for in_path in FILES_IN_MOMENTUM:
+        filepath = aims_dir_path / in_path
+        momentum_matrices.append(_read_mx_val(filepath, n_ham_size_nosymm))
+    return momentum_matrices
 
 def _read_mx_val_hdf5(file_path: Path, n_ham_size: int):
     # file type: hdf5, dataset 'sparse_matrix', size n_ham_size
@@ -499,7 +518,7 @@ def _read_fermi(aims_dir_path: Path):
 
 def _trans_mxs_to_R_dict(start_idx_matrix:np.ndarray, end_idx_matrix:np.ndarray, col_idx:np.ndarray, 
                           cell_indices:np.ndarray, orbit_quantity_list: list[int], phase_factor: np.ndarray,
-                          mxs: list[np.ndarray], n_cells:int, n_basis:int, sub_idx:np.ndarray):
+                          mxs: list[np.ndarray], n_cells:int, n_basis:int, sub_idx:np.ndarray, symm:bool = True):
     '''
     deeph data structure ref:
         atom_pairs: (n_atom_pairs, 5), int
@@ -545,11 +564,12 @@ def _trans_mxs_to_R_dict(start_idx_matrix:np.ndarray, end_idx_matrix:np.ndarray,
                     # For Spin-Orbit Coupling with Complex Hamiltonian, need conjugate here
                     # But standard FHI-aims text output usually Real (or separated). 
                     # Assuming Real for now based on dtype=float load.
-                    if abs(mx_R[R_hermi_key][mx_idx][idx_col_sub, idx_row_sub]) <= 1e-10:
-                        mx_R[R_hermi_key][mx_idx][idx_col_sub, idx_row_sub] = single_val  # real matrix assumed
-                    else:
-                        assert abs(mx_R[R_hermi_key][mx_idx][idx_col_sub, idx_row_sub] - single_val) < 1e-6, \
-                            f"Hermitian check failed at R={nR}, atom pair=({i_atom},{j_atom}), orb=({idx_i_basis},{idx_j_basis})"
+                    if symm:
+                        if abs(mx_R[R_hermi_key][mx_idx][idx_col_sub, idx_row_sub]) <= 1e-10:
+                            mx_R[R_hermi_key][mx_idx][idx_col_sub, idx_row_sub] = single_val  # real matrix assumed
+                        else:
+                            assert abs(mx_R[R_hermi_key][mx_idx][idx_col_sub, idx_row_sub] - single_val) < 1e-6, \
+                                f"Hermitian check failed at R={nR}, atom pair=({i_atom},{j_atom}), orb=({idx_i_basis},{idx_j_basis})"
 
     return num_mx, mx_R
 
@@ -586,11 +606,11 @@ def _trans_mxs_to_entries(start_idx_matrix:np.ndarray, end_idx_matrix:np.ndarray
 
 def _trans_electric_response_to_entries(start_idx_matrix:np.ndarray, end_idx_matrix:np.ndarray, col_idx:np.ndarray, 
                           cell_indices:np.ndarray, orbit_quantity_list: list[int], phase_factor: np.ndarray,
-                          first_order_matrices: list[np.ndarray], n_cells:int, n_basis:int, sub_idx:np.ndarray):
+                          first_order_matrices: list[np.ndarray], n_cells:int, n_basis:int, sub_idx:np.ndarray, symm: bool = True):
     
     assert len(first_order_matrices) == 3, "Expected three first-order matrices for electric response"
     _, mx_R = _trans_mxs_to_R_dict(start_idx_matrix, end_idx_matrix, col_idx, cell_indices, orbit_quantity_list, 
-                                        phase_factor, first_order_matrices, n_cells, n_basis, sub_idx)
+                                        phase_factor, first_order_matrices, n_cells, n_basis, sub_idx, symm=symm)
 
     first_order_mx_R: dict[tuple[int, int, int, int, int], list[np.ndarray]] = {}
     for key, mx_list in mx_R.items():
@@ -655,7 +675,7 @@ class FHIAimsReader:
         self.ctrl_params, self.spinful, self.aims_data_type = _read_ctrl_in(self.aims_path)  # DONE: plain / hdf5
         # ------------ structure info from geometry.in ------------
         self.is_periodic, self.lat, self.site_positions, \
-        self.element, self.species, sort_idxs = _parse_struct(self.aims_path)
+        self.element, self.species, sort_idxs, self.total_occ_num = _parse_struct(self.aims_path)
         assert self.is_periodic, "Only periodic system is supported!"
         # ------------ basis info from basis-indices.out ------------
         _check_and_fix_basis_idx(self.aims_path)
@@ -730,10 +750,19 @@ class FHIAimsReader:
         # ------------ parse whether have electric response output file ---------------
         self.with_electric_response = _parse_whether_electric_response(self.aims_path)
         if self.with_electric_response:
+            # H(1) matrices
             self.first_order_matrices = _read_electric_response(self.aims_path, self.n_ham_size)
             _, self.electric_res_chunk_boundaries, self.electric_res_chunk_shapes, self.electric_response_entries = \
             _trans_electric_response_to_entries(self.start_idx_matrix, self.end_idx_matrix, self.col_idx, self.cell_indices,
             self.orbit_quantity_list, self.phase_factor, self.first_order_matrices, self.n_cells, self.n_basis, self.sub_idx)
+            # momentum matrices
+            self.n_ham_size_nosymm, self.n_cells_nosymm, self.n_basis_nosymm, self.cell_indices_nosymm, \
+            self.start_idx_matrix_nosymm, self.end_idx_matrix_nosymm, self.col_idx_nosymm = \
+                _read_mx_indices(self.aims_path, symm=False)
+            self.momentum_matrices = _read_momentum_matrix_nosymm(self.aims_path, self.n_ham_size_nosymm)
+            self.atom_pairs_nosymm, self.momentum_chunk_boundaries_nosymm, self.momentum_chunk_shapes_nosymm, self.momentum_entries = \
+            _trans_electric_response_to_entries(self.start_idx_matrix_nosymm, self.end_idx_matrix_nosymm, self.col_idx_nosymm, self.cell_indices_nosymm,
+            self.orbit_quantity_list, self.phase_factor, self.momentum_matrices, self.n_cells_nosymm, self.n_basis_nosymm, self.sub_idx, symm=False)
         # ------------ fermi energy from aims.out ------------
         self.fermi_level = 0.00000
             # check if file exists
@@ -781,6 +810,7 @@ class FHIAimsReader:
         file_path = self.deeph_path / DEEPX_INFO_FILENAME
         info_json = {
             "atoms_quantity": int(self.natom),
+            "occupation": int(self.total_occ_num),
             "orbits_quantity": int(self.n_basis),
             "orthogonal_basis": False,
             "spinful": bool(self.spinful),
@@ -828,6 +858,7 @@ class FHIAimsReader:
 
     def _dump_electric_response(self):
         if self.with_electric_response:
+            # dump H(1)
             file_path = self.deeph_path / DEEPX_ELECTRIC_RESPONSE_FILENAME
             with h5py.File(file_path, 'w') as fwh:
                 fwh.create_dataset(
@@ -841,6 +872,21 @@ class FHIAimsReader:
                 )
                 fwh.create_dataset(
                     'entries', data=self.electric_response_entries
+                )
+            # dump momentum matrix
+            file_path = self.deeph_path / DEEPX_MOMENTUM_FILENAME
+            with h5py.File(file_path, 'w') as fwh:
+                fwh.create_dataset(
+                    'atom_pairs', data=self.atom_pairs_nosymm, dtype='i4'
+                )
+                fwh.create_dataset(
+                    'chunk_boundaries', data=self.momentum_chunk_boundaries_nosymm, dtype='i4'
+                )
+                fwh.create_dataset(
+                    'chunk_shapes', data=self.momentum_chunk_shapes_nosymm, dtype='i4'
+                )
+                fwh.create_dataset(
+                    'entries', data=self.momentum_entries
                 )
 
     # DONE: parallel HDF5 support case aims_save_type='hdf5'
