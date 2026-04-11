@@ -163,3 +163,141 @@ def translate_periodic_aims_to_deeph(
     )
     translator.transfer_all_aims_to_deeph()
     click.echo("[done] Translation completed successfully!")
+
+
+@register(
+    cli_name="species-h5-single",
+    cli_help="Parse one FHI-aims run directory and export species_aims_{xc}.h5.",
+    cli_args=[
+        click.argument(
+            "run_dir",
+            type=click.Path(exists=True, file_okay=False),
+        ),
+        click.argument(
+            "output_h5",
+            type=click.Path(file_okay=True, dir_okay=False),
+        ),
+        click.option(
+            "--xc",
+            type=str,
+            default=None,
+            help="Override xc functional in output attrs (default: read from control.in).",
+        ),
+        click.option(
+            "--tol",
+            type=float,
+            default=5e-7,
+            show_default=True,
+            help="Tail truncation tolerance used for cutoff/grid_length.",
+        ),
+    ],
+)
+def export_species_h5_single(run_dir: Path, output_h5: Path, xc: str | None, tol: float):
+    run_dir = Path(run_dir)
+    output_h5 = Path(output_h5)
+
+    from deepx_dock.convert.fhi_aims.species_h5_single import convert_single_run_to_species_h5
+
+    click.echo("=" * 60)
+    click.echo("[info] Exporting single-run FHI-aims species H5")
+    click.echo("=" * 60)
+    click.echo(f"[info] run_dir: {run_dir}")
+    click.echo(f"[info] output_h5: {output_h5}")
+    if xc:
+        click.echo(f"[info] xc override: {xc}")
+    click.echo(f"[info] tol: {tol}")
+    click.echo()
+
+    out = convert_single_run_to_species_h5(
+        run_dir=run_dir,
+        output_h5=output_h5,
+        xc_functional=xc,
+        tol=tol,
+    )
+
+    click.echo("[done] Export completed and validated")
+    click.echo(f"[done] Output file: {out}")
+
+
+@register(
+    cli_name="species-h5",
+    cli_help="Scan and parse multiple FHI-aims run directories in parallel, then export one merged species_aims_{xc}.h5.",
+    cli_args=[
+        click.argument(
+            "runs_root",
+            type=click.Path(exists=True, file_okay=False),
+        ),
+        click.argument(
+            "output_h5",
+            type=click.Path(file_okay=True, dir_okay=False),
+        ),
+        click.option(
+            "--tier-num",
+            "-t",
+            type=int,
+            default=0,
+            show_default=True,
+            help="Tier number for scanning run directories. -1 for [runs_root] itself, 0 for <runs_root>/<run_dirs>, etc.",
+        ),
+        click.option(
+            "--jobs-num",
+            "-j",
+            type=int,
+            default=-1,
+            show_default=True,
+            help="Parallel job count. -1 for all cores.",
+        ),
+        click.option(
+            "--xc",
+            type=str,
+            default=None,
+            help="Override xc functional in output attrs (default: infer from runs).",
+        ),
+        click.option(
+            "--tol",
+            type=float,
+            default=5e-7,
+            show_default=True,
+            help="Tail truncation tolerance used for cutoff/grid_length.",
+        ),
+        click.option(
+            "--conflict-policy",
+            type=click.Choice(["error", "first"], case_sensitive=False),
+            default="error",
+            show_default=True,
+            help="How to handle conflicting species definitions across runs.",
+        ),
+        click.option(
+            "--fail-fast/--skip-failed",
+            default=True,
+            show_default=True,
+            help="Fail immediately on first parse error, or skip failed run directories.",
+        ),
+    ],
+)
+def export_species_h5_multi(
+    runs_root: Path,
+    output_h5: Path,
+    tier_num: int,
+    jobs_num: int,
+    xc: str | None,
+    tol: float,
+    conflict_policy: str,
+    fail_fast: bool,
+):
+    from deepx_dock.convert.fhi_aims.species_h5_multi import run_species_h5_multi
+
+    try:
+        run_species_h5_multi(
+            runs_root=runs_root,
+            output_h5=output_h5,
+            tier_num=tier_num,
+            jobs_num=jobs_num,
+            xc_functional=xc,
+            tol=tol,
+            conflict_policy=conflict_policy,
+            fail_fast=fail_fast,
+            echo=click.echo,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
