@@ -417,7 +417,7 @@ deepx_dock/
 | Problem | Cause | Solution |
 |---------|-------|----------|
 | High-k noise | Logarithmic grid sparse at large r | Interpolate to linear grid |
-| PAO parse error | Dividing r*phi by r | Store r*phi directly |
+| PAO parse error | Dividing r*phi by r | Store phi directly |
 | Atom order mismatch | HPRO sort_atoms bug | Custom build_atom_reorder_mapping |
 | spinful incorrect | Not parsed from input | Parse SOC/SpinPolarization |
 | overlap.h5/POSCAR mismatch | HPRO save_mat_deeph bug | Custom save_overlap_deeph |
