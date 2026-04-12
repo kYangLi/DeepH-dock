@@ -188,7 +188,7 @@ def translate_periodic_aims_to_deeph(
             type=float,
             default=5e-7,
             show_default=True,
-            help="Tail truncation tolerance used for cutoff/grid_length.",
+            help="Tail truncation tolerance used for basis/val_density cutoff/grid_length.",
         ),
     ],
 )
@@ -258,7 +258,7 @@ def export_species_h5_single(run_dir: Path, output_h5: Path, xc: str | None, tol
             type=float,
             default=5e-7,
             show_default=True,
-            help="Tail truncation tolerance used for cutoff/grid_length.",
+            help="Tail truncation tolerance used for basis/val_density cutoff/grid_length.",
         ),
         click.option(
             "--conflict-policy",
