@@ -245,7 +245,7 @@ class AOWfnObj:
         Args:
             ik: int, k point index
             ib: int, band index
-            gridsize: np.ndarray (3,), real space grid size
+            gridsize: np.ndarray (3,), real space grid size (nx, ny, nz)
             return_periodic: bool, whether to return the full Bloch wavefunction 
                 or just its periodic part u(r) = e^{-ikr} psi(r)
         
