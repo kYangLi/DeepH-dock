@@ -8,6 +8,9 @@ from scipy.spatial import KDTree
 
 from HPRO.utils.structure import Structure
 from HPRO.io.aodata import AOData
+from HPRO.utils.supercell import minimum_supercell
+from HPRO.utils.misc import index_traverse
+from HPRO.matao.mataocsr import OrbInfo, OrbInfoSuperCell
 
 from deepx_dock.parallel import parallel_map
 from deepx_dock.misc import load_json_file, load_poscar_file
@@ -44,6 +47,7 @@ class AOWfnObj:
     """
     def __init__(self, info_dir_path, basis_dir_path, aocode):
         self.aocode = aocode
+        self.gridsizefi = None
         self._get_necessary_data_path(info_dir_path, basis_dir_path)
         self.parse_data()
         
@@ -122,7 +126,119 @@ class AOWfnObj:
         #
         return np.vstack([b1, b2, b3])
 
-    def to_real_space(self, ik, ib, gridsize, n_jobs=1):
+    def _init_grid(self, gridsize):
+        """
+        iosc_ongrid(ndata), fosc_ongrid(ncoords, ndata), igdptr(ndata):
+            (ncoords is the number of fine grid points inside a coarse grid volume)
+        iosc_ongrid[igdptr[igdco]:igdptr[igdco+1]] are indices of atomic orbitals in supercell that have 
+                                                    been computed on coarse grid point igdco
+        fosc_ongrid[:, igdptr[igdco]:igdptr[igdco+1]] are values of atomic orbitals. The first dimension 
+                                                        corresponds to different fine grid points within 
+                                                        this coarse grid volume.
+        """
+        gridsize = np.array(gridsize)
+        aodata = self.basis_data
+        structure = aodata.structure 
+        
+        # Determine nsubdiv (ratio of coarse grid size to fine grid size):
+        # find the smallest number of fine grid points enclosed by fine grid when i is between 13 to 19
+        npoints = []
+        itrials = list(range(*GRIDINTG_NSUBDIV_RANGE))
+        for i in itrials:
+            gridsizeco = (gridsize - 1) // i + 1
+            ngridco = np.prod(gridsizeco)
+            npoints.append(ngridco * i**3)
+        self.nsubdiv = itrials[np.argmin(npoints)]
+
+        self.gridsizefi = gridsize
+        self.gridsizeco = (gridsize - 1) // self.nsubdiv + 1
+        assert np.min(self.gridsizeco) > 0
+
+        # Preparations of the coarse integration grid
+        rprimgridfi = structure.rprim / self.gridsizefi[:, None]
+        rprimgridco = rprimgridfi * self.nsubdiv
+        offsets = index_traverse(np.arange(0, self.nsubdiv, 1),
+                                 np.arange(0, self.nsubdiv, 1),
+                                 np.arange(0, self.nsubdiv, 1)) @ rprimgridfi
+        ncoords = self.nsubdiv ** 3
+        # dr is 1/2 of the maximum of the distances between any pair of vertices of the parallelipiped
+        rvertices = index_traverse([0, 1], [0, 1], [0, 1]) @ (rprimgridco - rprimgridfi)
+        dr = np.max(np.linalg.norm(rvertices[:, None, :] - rvertices[None, :, :], axis=2)) / 2
+        dxyz = np.full(3, (self.nsubdiv-1) / 2) @ rprimgridfi 
+        #
+        self.orbinfo1 = OrbInfo(aodata)
+        rmax = max(aodata.cutoffs.values())
+        rmax = 2 * (rmax + dr)
+        self.supercell = minimum_supercell(structure, rmax)
+        self.orbinfo2 = OrbInfoSuperCell(aodata, self.supercell, 
+                                         orbinfo_uc=self.orbinfo1)
+        # Create KDTree for each atomic species
+        trees_spc, mapiat_spc = [], []
+        for ispc in range(self.supercell.nspc):
+            spc = structure.atomic_species[ispc]
+            is_thisspc = (self.supercell.atomic_numbers == spc)
+            trees_spc.append(KDTree(self.supercell.atomic_positions_cart[is_thisspc]))
+            mapiat_spc.append(np.where(is_thisspc)[0])
+
+        ntotcogrid = np.prod(self.gridsizeco)
+        igd, igdloc = 0, 0
+        igdptr = [0]
+        iouc_ongrid = []
+        translations_ongrid = []
+        fosc_ongrid = []
+        for ia_co in range(self.gridsizeco[0]):
+            for ib_co in range(self.gridsizeco[1]):
+                for ic_co in range(self.gridsizeco[2]):
+                    # find the center of coarse grid volume
+                    corner = np.array([ia_co, ib_co, ic_co]) @ rprimgridco
+                    center = corner + dxyz
+                    # find the points inside the coarse grid volume
+                    ptcoords = corner[None, :] + offsets # (ncoords, 3)
+
+                    nphi_thispoint = 0 # number of orbitals that take nonzero values in the coarse grid volume
+                    for ispc in range(self.supercell.nspc):
+                        spc = structure.atomic_species[ispc]
+                        for irad in range(aodata.nradial_spc[spc]):
+                            phirgrid = aodata.phirgrids_spc[spc][irad]
+
+                            # Treat AOs within r+dr of the center of the coarse grid to be "nonzero"
+                            # And compute their values in the coarse grid
+                            r = phirgrid.rcut + dr
+                            iat_tree = np.array(trees_spc[ispc].query_ball_point(center, r))
+                            if len(iat_tree) == 0: continue
+                            iatsc = mapiat_spc[ispc][iat_tree] # atoms of type ispc, whose orbital irad takes nonzero values in the coarse grid volume (count = nat)
+
+                            # Compute orbital values
+                            rdiff = ptcoords[:, None, :] - self.supercell.atomic_positions_cart[None, iatsc, :] # (ncoords, nat, 3)
+                            phi = phirgrid.getval3D(rdiff).reshape(ncoords, len(iatsc)*(2*phirgrid.l+1)) # (ncoords, nat*(2l+1)); norb = nat*(2l+1)
+
+                            # Prepare array of (iat_full, irad_full, m_full) that have the same length as phi
+                            # Find the indices of the "nonzero" orbitals in the supercell
+                            tmp = index_traverse(iatsc, np.arange(-phirgrid.l, phirgrid.l+1, 1))
+                            iat_full, m_full = tmp[:, 0], tmp[:, 1]
+                            # e.g., iat_full = [643, 643, 643, 634, 634, 634, 760, 760, 760], 
+                            # m_full = [-1,  0,  1, -1,  0,  1, -1,  0,  1]
+                            assert len(iat_full) == phi.shape[1]
+                            irad_full = np.full(phi.shape[1], irad)
+                            iorbsc = self.orbinfo2.find_orbindx3(iat_full, irad_full, m_full)
+                            translations, iorbuc = self.orbinfo2._iorb_sc2uc(iorbsc, return_trans_cuc=True) # (norb, 3); (norb,)
+
+                            iouc_ongrid.append(iorbuc)
+                            translations_ongrid.append(translations)
+                            fosc_ongrid.append(phi)
+                            nphi_thispoint += len(iorbsc)
+
+                    igdptr.append(igdptr[-1] + nphi_thispoint)
+                    igdloc += 1
+
+                    igd += 1
+
+        self.iouc_ongrid = np.concatenate(iouc_ongrid) # (M,)
+        self.translations_ongrid = np.concatenate(translations_ongrid) # (M, 3)
+        self.fosc_ongrid = np.concatenate(fosc_ongrid, axis=1).T # (M, ncoords)
+        self.igdptr = np.array(igdptr) # (ngd_co+1,)
+
+    def to_real_space(self, ik=None, ib=None, gridsize=None, return_periodic=True):
         """
         Compute the periodic part of Bloch wavefunction u_{nk}(r) = e^{-ikr} * psi_{nk}(r).
         
@@ -130,360 +246,163 @@ class AOWfnObj:
             ik: int, k point index
             ib: int, band index
             gridsize: np.ndarray (3,), real space grid size
-            n_jobs: int, number of processes for a single real space grid
+            return_periodic: bool, whether to return the full Bloch wavefunction 
+                or just its periodic part u(r) = e^{-ikr} psi(r)
         
         Returns:
-            u_grid: np.ndarray (nx, ny, nz), complex, Bloch wavefunction values in real space
+            u_grid: np.ndarray (nk, nb, nspinor, nx, ny, nz), complex, Bloch wavefunction values in real space
         """
-        
-        c_vec = self.wfnao[ik, ib, :]  # (Norb,)
+        if gridsize is not None and not np.array_equal(gridsize, self.gridsizefi):
+            self._init_grid(gridsize)
+        assert self.gridsizefi is not None
+
         aodata = self.basis_data
-        structure = aodata.structure
-        kvec_frac = self.kpts[ik] 
-        inv_lattice_bohr = self.reciprocal_lattice * BOHR_TO_ANGSTROM # self.reciprocal_lattice is in angstrom^{-1}.
-        #
-        atom_orb_ranges = []
-        idx_cursor = 0
-        for iat in range(structure.nat):
-            spc = structure.atomic_species[iat]
-            n_orb_atom = 0
-            for irad in range(aodata.nradial_spc[spc]):
-                l = aodata.phirgrids_spc[spc][irad].l
-                n_orb_atom += (2 * l + 1)
-            atom_orb_ranges.append((idx_cursor, idx_cursor + n_orb_atom))
-            idx_cursor += n_orb_atom
-        assert idx_cursor == c_vec.shape[0]
-        #
-        gridsize = np.array(gridsize)
-        npoints = []
-        itrials = range(*GRIDINTG_NSUBDIV_RANGE)
-        for i in itrials:
-            gridsizeco = (gridsize - 1) // i + 1
-            npoints.append(np.prod(gridsizeco) * i**3)
-        nsubdiv = itrials[np.argmin(npoints)]
-        
-        gridsizeco = (gridsize - 1) // nsubdiv + 1
-        rprim = structure.rprim # in bohr
-        rprimgridfi = rprim / gridsize[:, None]
-        rprimgridco = rprimgridfi * nsubdiv
-        
-        grids_1d = np.arange(nsubdiv)
-        mesh_idx = np.array(np.meshgrid(grids_1d, grids_1d, grids_1d, indexing='ij')).reshape(3, -1).T
-        offsets = mesh_idx @ rprimgridfi
+        structure = aodata.structure 
 
-        # Pre-compute phase factors for offsets
-        # Convert offsets to fractional coordinates: r_frac = r_cart @ inv_lattice.T
-        offsets_frac = offsets @ inv_lattice_bohr.T # (nsubdiv**3, 3)
-        # Calculate exp(-i * k * r_offset) for all points in a coarse block
-        offset_phases = np.exp(-1j * (offsets_frac @ kvec_frac)) # (nsubdiv**3,)
-
-        rvertices = np.array(np.meshgrid([0,1],[0,1],[0,1])).reshape(3,-1).T @ (rprimgridco - rprimgridfi)
-        dr = np.max(np.linalg.norm(rvertices[:, None, :] - rvertices[None, :, :], axis=2)) / 2
-        dxyz_center = np.sum(rprimgridfi * (nsubdiv - 1) / 2, axis=0)
-        
-        rmax_ao = max(aodata.cutoffs.values())
-        search_radius = rmax_ao + dr
-
-        sc_indices = [] # list of (iat_uc, R_idx)
-        sc_positions = []
-        
-        img_range = range(-1, 2) 
-        R_shifts = np.array(np.meshgrid(img_range, img_range, img_range)).reshape(3, -1).T
-        
-        for R_idx in R_shifts:
-            R_vec = R_idx @ rprim
-            curr_pos = structure.atomic_positions_cart + R_vec
-            sc_positions.append(curr_pos)
-            for iat in range(structure.nat):
-                sc_indices.append((iat, R_idx))
-                
-        sc_positions = np.concatenate(sc_positions, axis=0) # (Nat * Nimage, 3)
-        
-        trees_spc = {}     # {spc_id: KDTree}
-        map_sc_idx_spc = {} # {spc_id: array of indices in sc_indices list}
-        
-        sc_species = np.tile(structure.atomic_species, len(R_shifts))
-        
-        for spc in np.unique(structure.atomic_species):
-            mask = (sc_species == spc)
-            trees_spc[spc] = KDTree(sc_positions[mask])
-            map_sc_idx_spc[spc] = np.where(mask)[0]
-
-        coarse_indices = np.array(list(np.ndindex(tuple(gridsizeco))))
-        
-        ctx = {
-            'gridsizefi': gridsize, 'nsubdiv': nsubdiv,
-            'rprimgridco': rprimgridco, 'dxyz_center': dxyz_center, 'offsets': offsets,
-            'offset_phases': offset_phases,
-            'search_radius': search_radius,
-            'trees_spc': trees_spc, 'map_sc_idx_spc': map_sc_idx_spc,
-            'sc_indices': sc_indices, 'sc_positions': sc_positions,
-            'aodata': aodata, 'atom_orb_ranges': atom_orb_ranges,
-            'c_vec': c_vec, 
-            'kvec_frac': kvec_frac,
-            'inv_lattice': inv_lattice_bohr,
-            'structure_species': structure.atomic_species
-        }
-
-        n_batches = min(len(coarse_indices), max(1, os.cpu_count() * 4))
-        batches = np.array_split(coarse_indices, n_batches)
-        
-        with threadpoolctl.threadpool_limits(limits=1, user_api='blas'):
-            results = parallel_map(
-                lambda batch_idxs: self._calc_u_batch(batch_idxs, ctx),
-                batches,
-                n_jobs=n_jobs,
-                desc="Processing batches"
-            )
-
-        u_grid_flat = np.zeros(np.prod(gridsize), dtype=np.complex128)
-        
-        # results: list of (linear_indices, values)
-        for batch_res in results:
-            if batch_res is None: continue
-            lin_idxs, vals = batch_res
-            u_grid_flat[lin_idxs] = vals
+        nk_all = self.wfnao.shape[0]
+        nb_all = self.wfnao.shape[1]
+        if ik is None:
+            ik = np.arange(nk_all)
+        else:
+            ik = np.array(ik)
+        if ib is None:
+            ib = np.arange(nb_all)
+        else:
+            ib = np.array(ib)
+        nk = len(ik)
+        nb = len(ib)
             
-        return u_grid_flat.reshape(gridsize)
+        # Fractional coordinates of the selected k-points.
+        # Shape: (nk, 3)
+        kpts = self.kpts[ik] 
+        
+        # Extract and transpose atomic orbital (AO) coefficients to prioritize the orbital dimension.
+        # Transposed c_vec shape: (norb, nk, nb, nspinor)
+        nspinor = 2 if self.spinful else 1
+        num_orbitals_tot = self.wfnao.shape[-1] // nspinor
+        wfnao = self.wfnao[np.array(ik)[:, np.newaxis], np.array(ib), :]
+        c_vec = np.zeros((nk, nb, nspinor, num_orbitals_tot), dtype=self.wfnao.dtype)
+
+        site_norbits = np.zeros(structure.natom, dtype=int)
+        for iatm in range(structure.natom):
+            atm_nbr = structure.atomic_numbers[iatm]
+            site_norbits[iatm] = aodata.norbfull_spc[atm_nbr]
+            
+        if nspinor == 2:
+            current_orbitals_idx = 0
+            current_idx = 0
+            for n_i in site_norbits:
+                c_vec[:,:,0, current_orbitals_idx : current_orbitals_idx + n_i] = wfnao[:,:,current_idx : current_idx + n_i]
+                c_vec[:,:,1, current_orbitals_idx : current_orbitals_idx + n_i] = wfnao[:,:,current_idx + n_i : current_idx + 2 * n_i]
+                current_orbitals_idx += n_i
+                current_idx += 2 * n_i
+        elif nspinor == 1:
+            c_vec = wfnao.reshape((nk, nb, nspinor, -1), order='C')  # (nk, nb, nspinor, norb)
+
+        c_vec = c_vec.transpose(3, 0, 1, 2)
+        
+        # Initialize the global real-space wavefunction tensor.
+        # Shape: (N_x, N_y, N_z, nk, nb, nspinor)
+        psi_global = np.zeros(
+            (self.gridsizefi[0], self.gridsizefi[1], self.gridsizefi[2], nk, nb, nspinor),
+            dtype=np.complex128
+        )
+        
+        # ncoords defines the total number of fine grid points contained within a standard coarse grid.
+        # Constraint: ncoords = nsubdiv^3
+        ncoords = self.nsubdiv ** 3
+        
+        # Total number of coarse grids generated in the system.
+        ngd_co = len(self.igdptr) - 1
+        
+        for igd_co in range(ngd_co):
+            # Unravel the 1D coarse grid index into 3D structural block indices (ia_co, ib_co, ic_co).
+            ia_co = igd_co // (self.gridsizeco[1] * self.gridsizeco[2])
+            rem = igd_co % (self.gridsizeco[1] * self.gridsizeco[2])
+            ib_co = rem // self.gridsizeco[2]
+            ic_co = rem % self.gridsizeco[2]
+            
+            # Calculate the global fine grid coordinate boundaries for the current coarse grid block.
+            # The min() function dynamically handles non-divisible edge truncations.
+            a_start = ia_co * self.nsubdiv
+            a_end = min(a_start + self.nsubdiv, self.gridsizefi[0])
+            b_start = ib_co * self.nsubdiv
+            b_end = min(b_start + self.nsubdiv, self.gridsizefi[1])
+            c_start = ic_co * self.nsubdiv
+            c_end = min(c_start + self.nsubdiv, self.gridsizefi[2])
+            
+            # Compute the valid structural lengths along each axis, discarding the out-of-bounds region.
+            la = a_end - a_start
+            lb = b_end - b_start
+            lc = c_end - c_start
+            
+            # Retrieve pointers for the pre-calculated orbital subsets mapped to this specific grid block.
+            start_idx = self.igdptr[igd_co]
+            end_idx = self.igdptr[igd_co+1]
+            if start_idx == end_idx: 
+                # Skip iteration if no atomic orbitals take nonzero values in this domain.
+                continue
+
+            # iouc_thisgd: Indices of orbitals present in the current block. Shape: (M_thisgd,)
+            iouc_thisgd = self.iouc_ongrid[start_idx:end_idx]
+            # fosc_thisgd: Pre-calculated real-space AO values $f_{m,r}$. Shape: (M_thisgd, ncoords)
+            fosc_thisgd = self.fosc_ongrid[start_idx:end_idx, :]
+            # trans_thisgd: Supercell translation vectors $\mathbf{T}_m$, in fractional coordinates. Shape: (M_thisgd, 3)
+            trans_thisgd = self.translations_ongrid[start_idx:end_idx, :]
+
+            # Compute the Bloch phase factor: $e^{i 2\pi \mathbf{T}_m \cdot \mathbf{k}}$.
+            # Broadcasting matrix multiplication between translations (M_thisgd, 3) and kpts.T (3, nk).
+            # Shape: (M_thisgd, nk)
+            phase_thisgd = np.exp(1j * 2 * np.pi * trans_thisgd @ kpts.T) 
+            
+            # Select the sub-matrix of coefficients $c_{m,k,b,s}$ corresponding to the active orbitals.
+            # Shape: (M_thisgd, nk, nb, nspinor)
+            c_thisgd = c_vec[iouc_thisgd] 
+            
+            # Apply the translation phase factor to the local coefficients via broadcasting.
+            # $\tilde{c} = c \cdot e^{i 2\pi \mathbf{T} \cdot \mathbf{k}}$
+            # New axes align the phase array with the full tensor dimensions.
+            # Shape: (M_thisgd, nk, nb, nspinor)
+            c_tilde = c_thisgd * phase_thisgd[:, :, np.newaxis, np.newaxis]
+            
+            # Flatten all trailing physical dimensions to construct a 2D matrix for efficient computation.
+            # Shape: (M_thisgd, nk * nb * nspinor)
+            c_tilde_flat = c_tilde.reshape(c_tilde.shape[0], -1) 
+            
+            # Perform core tensor contraction via highly optimized BLAS matrix multiplication.
+            # $\Phi = F^T \tilde{C}$
+            # Shape: (ncoords, nk * nb * nspinor)
+            psi_r_flat = fosc_thisgd.T @ c_tilde_flat 
+            
+            # Unflatten the matrix product to restore the physical 3D structural dimensions.
+            # Shape: (nsubdiv, nsubdiv, nsubdiv, nk, nb, nspinor)
+            psi_r_thisgd = psi_r_flat.reshape(self.nsubdiv, self.nsubdiv, self.nsubdiv, nk, nb, nspinor)
+            
+            # Map the valid inner domain of the local grid block back to the global spatial tensor.
+            # Slicing [:la, :lb, :lc] exactly matches the dynamically truncated active lengths.
+            psi_global[a_start:a_end, b_start:b_end, c_start:c_end] = psi_r_thisgd[:la, :lb, :lc]
+
+        if return_periodic:
+            # Generate 1D fractional coordinates for each axis
+            grid_a = np.arange(self.gridsizefi[0]) / self.gridsizefi[0]
+            grid_b = np.arange(self.gridsizefi[1]) / self.gridsizefi[1]
+            grid_c = np.arange(self.gridsizefi[2]) / self.gridsizefi[2]
+            
+            # Construct a 3D grid of fractional coordinates. Shape: (N_x, N_y, N_z, 3)
+            r_frac = np.stack(np.meshgrid(grid_a, grid_b, grid_c, indexing='ij'), axis=-1)
+            
+            # Calculate the inverse Bloch phase: exp(-i 2\pi k \cdot r_frac)
+            # Use tensordot to perform dot product over the last axis (spatial dimension 3)
+            # Resulting phase_inv shape: (N_x, N_y, N_z, nk)
+            phase_inv = np.exp(-1j * 2 * np.pi * np.tensordot(r_frac, kpts, axes=([-1], [-1])))
+            
+            # Broadcast the phase factor across the band and spinor dimensions
+            psi_global *= phase_inv[:, :, :, :, np.newaxis, np.newaxis]
+        
+        # Normalize wavefunctions so that the norm is equal to sqrt(prod(self.gridsizefi))
+        psi_global *= np.sqrt(structure.cell_volume)
+            
+        return psi_global.transpose((3, 4, 5, 0, 1, 2)) # (nk, nb, nspinor, nx, ny, nz)
 
     def to_dm(self, representation='k'):
         pass
-
-    @staticmethod
-    def _calc_u_batch(coarse_idxs, ctx):
-        """ Compute u(r) on fine grid points corresponding to a batch of coarse grid points """
-        if len(coarse_idxs) == 0: return None
-        
-        # unpack context
-        gridsizefi = ctx['gridsizefi']
-        nsubdiv = ctx['nsubdiv']
-        rprimgridco = ctx['rprimgridco']
-        dxyz = ctx['dxyz_center']
-        offsets = ctx['offsets']
-        offset_phases = ctx['offset_phases'] # (nsubdiv**3,)
-        search_radius = ctx['search_radius']
-        trees_spc = ctx['trees_spc']
-        map_sc_idx_spc = ctx['map_sc_idx_spc']
-        sc_indices = ctx['sc_indices'] # list of (iat_uc, R_idx)
-        sc_positions = ctx['sc_positions']
-        aodata = ctx['aodata']
-        atom_orb_ranges = ctx['atom_orb_ranges']
-        c_vec = ctx['c_vec']         # (Norb,)
-        kvec_frac = ctx['kvec_frac']
-        inv_lattice = ctx['inv_lattice']
-        
-        out_indices = []
-        out_values = []
-        
-        # Vectorized KDTree Query
-        # 1. Compute centers for all coarse blocks in this batch
-        coarse_idxs_arr = np.array(coarse_idxs) # (N_batch, 3)
-        corners = coarse_idxs_arr @ rprimgridco # (N_batch, 3)
-        centers = corners + dxyz                # (N_batch, 3)
-
-        # 2. Query all species at once
-        # batch_neighbors_dict: {spc: list_of_N_batch_results}
-        batch_neighbors_dict = {}
-        for spc, tree in trees_spc.items():
-            # query_ball_point with vector input returns an object array of lists
-            batch_neighbors_dict[spc] = tree.query_ball_point(centers, search_radius)
-
-        # 3. Iterate through each block in the batch
-        for i_batch, (ia, ib, ic) in enumerate(coarse_idxs):
-            corner = corners[i_batch] # (3,)
-            center = centers[i_batch] # (3,) (Already computed, just for reference if needed)
-            
-            # (ncoords, 3)
-            ptcoords = corner[None, :] + offsets
-            ncoords = len(ptcoords)
-            
-            slicea = slice(ia*nsubdiv, min((ia+1)*nsubdiv, gridsizefi[0]))
-            sliceb = slice(ib*nsubdiv, min((ib+1)*nsubdiv, gridsizefi[1]))
-            slicec = slice(ic*nsubdiv, min((ic+1)*nsubdiv, gridsizefi[2]))
-            
-            # generate local to global mapping
-            la, lb, lc = slicea.stop-slicea.start, sliceb.stop-sliceb.start, slicec.stop-slicec.start
-            if la*lb*lc == 0: continue
-            
-            valid_mask = np.zeros((nsubdiv, nsubdiv, nsubdiv), dtype=bool)
-            valid_mask[:la, :lb, :lc] = True
-            valid_mask_flat = valid_mask.flatten()
-            local_grids = np.array(np.meshgrid(
-                np.arange(slicea.start, slicea.stop),
-                np.arange(sliceb.start, sliceb.stop),
-                np.arange(slicec.start, slicec.stop), indexing='ij'
-            )).reshape(3, -1).T
-            
-            # convert 3D indices to 1D linear indices
-            # idx = x * Ny * Nz + y * Nz + z
-            lin_idxs = (local_grids[:,0] * gridsizefi[1] * gridsizefi[2] + 
-                        local_grids[:,1] * gridsizefi[2] + 
-                        local_grids[:,2])
-            
-            ptcoords_valid = ptcoords[valid_mask_flat]
-            n_valid = len(ptcoords_valid)
-            if n_valid == 0: continue
-
-            psi_r = np.zeros(n_valid, dtype=np.complex128)
-            
-            # traverse atom species using pre-queried results
-            for spc in trees_spc.keys():
-                found_indices = batch_neighbors_dict[spc][i_batch]
-                if not found_indices: continue
-                
-                real_sc_indices_ptr = map_sc_idx_spc[spc][found_indices]
-                
-                # traverse each atom
-                for ptr in real_sc_indices_ptr:
-                    iat_uc, R_idx = sc_indices[ptr] # here R_idx is integer index
-                    atom_pos = sc_positions[ptr]    # here it is still Cartesian coordinates, used for AO evaluation
-                    
-                    # calculate Bloch phase factor e^{ikR} * c_mu
-                    # use fractional coordinates: k_frac * R_int * 2pi
-                    phase_factor = np.exp(2j * np.pi * np.dot(kvec_frac, R_idx))
-                    
-                    # get the orbital coefficients slice
-                    start, end = atom_orb_ranges[iat_uc]
-                    coeffs_atom = c_vec[start:end] * phase_factor # (N_orb_atom,)
-                    
-                    # calculate AO value: phi(r - R_atom)
-                    # distance vector (n_valid, 3) (keep Cartesian coordinates for physical orbital evaluation)
-                    diff = ptcoords_valid - atom_pos[None, :]
-                    
-                    # accumulate different radial parts
-                    orb_cursor = 0
-                    for irad in range(aodata.nradial_spc[spc]):
-                        phirgrid = aodata.phirgrids_spc[spc][irad]
-                        l = phirgrid.l
-                        n_m = 2*l + 1
-                        
-                        # (n_valid, n_m)
-                        vals = phirgrid.getval3D(diff).reshape(n_valid, n_m)
-                        
-                        # corresponding coefficients (n_m,)
-                        c_shell = coeffs_atom[orb_cursor : orb_cursor+n_m]
-                        
-                        # accumulate to psi_r: psi += val * c
-                        psi_r += vals @ c_shell
-                        
-                        orb_cursor += n_m
-
-            # u(r) = e^{-ikr} * psi(r)
-            # Use pre-computed offset phases
-            # 1. Compute phase for the coarse grid corner: exp(-i * k * R_corner)
-            corner_frac = corner @ inv_lattice.T # (3,)
-            corner_phase = np.exp(-1j * (corner_frac @ kvec_frac)) # scalar
-            
-            # 2. Combine with offset phases: phase = corner_phase * offset_phase
-            # Extract valid phases corresponding to current block size
-            offset_phases_valid = offset_phases[valid_mask_flat] # (n_valid,)
-            phase_bloch_inv = corner_phase * offset_phases_valid
-            
-            u_r = psi_r * phase_bloch_inv
-            
-            out_indices.append(lin_idxs)
-            out_values.append(u_r)
-
-        if not out_indices: return None
-        return np.concatenate(out_indices), np.concatenate(out_values)
-
-"""
-Aside: WfnAO object in the BSE program Pykernel (wfnao has shape (nk, nb, norb), and el has shape (nk, nb)):
-
-class WfnAO(PyKernelBase):
-    _PRINT_ITEMS = ("fname", "nk", "nb")
-
-    def __init__(self, poscar_fname, basis_path_root, wfnao_file, nv=None, nc=None):
-        with open(poscar_fname) as f:
-            structure = from_poscar(f)
-        aodata = AOData(structure, basis_path_root=basis_path_root, aocode='siesta')
-
-        with h5py.File(wfnao_file, "r") as h5file:
-            kpts = h5file['kpts'][:].T
-            kgrid = h5file['kgrid'][:]
-            wfnao = h5file['wfnao'][:]
-            el = h5file['el'][:]
-            efermi = h5file['efermi'][()]
-
-        self.orb_info_dict_spc, self.num_orbitals_tot = create_orbital_list(structure, aodata)
-        nspin = wfnao.shape[2] // self.num_orbitals_tot
-        self.nspin = nspin
-        self.dtype = {1: np.float64, 2: np.complex128}[self.nspin]
-        self.wfnao = wfnao.reshape((wfnao.shape[0], wfnao.shape[1], nspin, -1), order='C')  # (nk, nb, nspin, norb)
-
-        self.structure = structure
-        self.aodata = aodata
-        self.kpts = kpts
-        self.kgrid = kgrid
-        self.nk = kpts.shape[1]  # Number of k-points
-        self.el = el
-        self.efermi = efermi
-
-        if nv is not None and nc is not None:
-            idx_v = topN_less_than(self.el, self.efermi, nv)
-            idx_c = lastN_greater_than(self.el, self.efermi, nc)
-            band_indices = np.concatenate((idx_v, idx_c), axis=1)  # (nk, nv+nc)
-            self.wfnao = self.wfnao[np.arange(self.nk)[:, None], band_indices, :, :]
-            self.nb = band_indices.shape[1]
-        else:
-            self.nb = self.wfnao.shape[1]
-            
-        self.wfnao_grouped, self.positions_red_grouped = group_wfnao_all(self.wfnao, structure.atomic_species, aodata.nradial_spc, self.orb_info_dict_spc)
-        self.rgrids_info_spc = {'rcut': {}, 'l': {}}
-        self.nradial_spc = {}
-        for spc in structure.atomic_species:
-            phirgrids = aodata.phirgrids_spc[spc]
-            self.nradial_spc[spc] = aodata.nradial_spc[spc]
-            rcut_spc, l_spc = [], []
-            for _, phirgrid in enumerate(phirgrids):
-                rcut_spc.append(phirgrid.rgd.rfunc[-1])
-                l_spc.append(np.zeros((phirgrid.l,), dtype=np.int32))
-
-            self.rgrids_info_spc['rcut'][spc] = rcut_spc
-            self.rgrids_info_spc['l'][spc] = l_spc
-
-def group_wfnao_all(wfnao, atomic_species, nradial_spc, orb_info_dict_spc):
-    wfnao_grouped = {}
-    positions_red_grouped = {}
-
-    for spc in atomic_species:
-        wfnao_spc = []
-        positions_red_spc = orb_info_dict_spc['positions_red'][spc]
-
-        positions_red_grouped[spc] = positions_red_spc
-
-        for irad in range(nradial_spc[spc]):
-            idx_thisorbit = orb_info_dict_spc['orbital_idx'][spc][irad] # (natom_spc, 2l+1)
-            wfnao_thisorbit = wfnao[:, :, :, idx_thisorbit]  # (nk, nb, nspin, natom_spc, 2l+1)
-            wfnao_thisorbit = np.transpose(wfnao_thisorbit, (0, 3, 4, 1, 2))  # (nk, natom_spc, 2l+1, nband, nspin)
-
-            # (nk, n_device, natom_padded/gpus_per_process, 2l+1, nband, nspin)
-            wfnao_spc.append(wfnao_thisorbit)
-        wfnao_grouped[spc] = wfnao_spc
-
-    return wfnao_grouped, positions_red_grouped
-
-def topN_less_than(arr: np.ndarray, val: float, N: int) -> np.ndarray:
-    arr_masked = np.where(arr < val, arr, -np.inf)
-
-    idx = np.argpartition(arr_masked, -N, axis=1)[:, -N:]  # (M,N)
-
-    rows = np.arange(arr.shape[0])[:, None]
-    vals = arr_masked[rows, idx]  # (M,N)
-    order = np.argsort(vals, axis=1)
-
-    idx_sorted = np.take_along_axis(idx, order, axis=1)
-    return idx_sorted
-
-def lastN_greater_than(arr: np.ndarray, val: float, N: int) -> np.ndarray:
-    B = np.where(arr > val, arr, np.inf)
-
-    part_idx = np.argpartition(B, N-1, axis=1)[:, :N]
-
-    rows = np.arange(arr.shape[0])[:, None]
-    vals = B[rows, part_idx]
-    order = np.argsort(vals, axis=1)
-
-    idx_sorted = np.take_along_axis(part_idx, order, axis=1)
-    return idx_sorted
-"""
