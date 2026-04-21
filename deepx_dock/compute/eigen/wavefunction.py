@@ -243,8 +243,8 @@ class AOWfnObj:
         Compute the periodic part of Bloch wavefunction u_{nk}(r) = e^{-ikr} * psi_{nk}(r).
         
         Args:
-            ik: int, k point index
-            ib: int, band index
+            ik: int or np.ndarray (nk,), k point index
+            ib: int or np.ndarray (nb,), band index
             gridsize: np.ndarray (3,), real space grid size (nx, ny, nz)
             return_periodic: bool, whether to return the full Bloch wavefunction 
                 or just its periodic part u(r) = e^{-ikr} psi(r)
@@ -263,10 +263,14 @@ class AOWfnObj:
         nb_all = self.wfnao.shape[1]
         if ik is None:
             ik = np.arange(nk_all)
+        elif isinstance(ik, int):
+            ik = np.array([ik])
         else:
             ik = np.array(ik)
         if ib is None:
             ib = np.arange(nb_all)
+        elif isinstance(ib, int):
+            ib = np.array([ib])
         else:
             ib = np.array(ib)
         nk = len(ik)
