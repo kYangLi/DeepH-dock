@@ -1032,6 +1032,9 @@ class ErrorStructureDistributionAnalyzer(BaseAnalyzer):
     def plot(self,
         plot_dpi=300, unit='(meV)', scale=1000, xlims=None, ylims=None
     ):
+        if len(self.errors) < 20:
+            print("[info] Not enough data to plot the distribution. Skip ...")
+            return
         # Get plot x and y
         from scipy.stats import gaussian_kde
         sorted_data = np.sort(self.errors)
