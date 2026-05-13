@@ -13,6 +13,7 @@ from functools import partial
 from deepx_dock.parallel import parallel_map
 from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME, DEEPX_INFO_FILENAME
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
+from deepx_dock.CONSTANT import DEEPX_PREDICT_HAMILTONIAN_FILENAME
 from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
 from deepx_dock.misc import get_data_dir_lister
 
@@ -28,12 +29,18 @@ def validation_check_H(root_dir: Path, prev_dirname: Path):
 def copy_files(input_dir, output_dir):
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
+    rule_out_files = [
+        DEEPX_HAMILTONIAN_FILENAME,
+        DEEPX_PREDICT_HAMILTONIAN_FILENAME,
+    ]
     for file in input_dir.iterdir():
-        if (str(file) not in [DEEPX_HAMILTONIAN_FILENAME, ]) and (not (output_dir / file).is_file()):
-            shutil.copyfile(input_dir/file, output_dir/file)
+        filename = file.name
+        if (filename not in rule_out_files) and (not (output_dir/filename).is_file()):
+            shutil.copyfile(input_dir/filename, output_dir/filename)
     for file in output_dir.iterdir():
-        if (str(file) not in [DEEPX_HAMILTONIAN_FILENAME, ]) and (not (input_dir/file).is_file()):
-            shutil.copyfile(output_dir/file, input_dir/file)
+        filename = file.name
+        if (filename not in rule_out_files) and (not (input_dir/filename).is_file()):
+            shutil.copyfile(output_dir/filename, input_dir/filename)
 
 
 def merge_dict(d1, d2, tag=""):
