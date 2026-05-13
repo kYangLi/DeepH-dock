@@ -473,6 +473,13 @@ def _parse_whether_electric_response(aims_dir_path: Path) -> bool:
             return True
     return False
 
+def _parse_whether_momentum(aims_dir_path: Path) -> bool:
+    # if have FILES_IN_MOMENTUM
+    for in_path in FILES_IN_MOMENTUM:
+        if (aims_dir_path / in_path).exists():
+            return True
+    return False
+
 def _read_electric_response(aims_dir_path: Path, n_ham_size: int):
     first_order_matrices: list[np.ndarray] = []
     for in_path in FILES_IN_ELECTRIC_RESPONSE:
@@ -778,12 +785,14 @@ class FHIAimsReader:
             self.entries_lst.append(np.concatenate(ham_entries_lst))
         # ------------ parse whether have electric response output file ---------------
         self.with_electric_response = _parse_whether_electric_response(self.aims_path)
+        self.with_momentum = _parse_whether_momentum(self.aims_path)
         if self.with_electric_response:
             # H(1) matrices
             self.first_order_matrices = _read_electric_response(self.aims_path, self.n_ham_size)
             _, self.electric_res_chunk_boundaries, self.electric_res_chunk_shapes, self.electric_response_entries = \
             _trans_electric_response_to_entries(self.start_idx_matrix, self.end_idx_matrix, self.col_idx, self.cell_indices,
             self.orbit_quantity_list, self.phase_factor, self.first_order_matrices, self.n_cells, self.n_basis, self.sub_idx)
+        if self.with_momentum:
             # momentum matrices
             self.n_ham_size_nosymm, self.n_cells_nosymm, self.n_basis_nosymm, self.cell_indices_nosymm, \
             self.start_idx_matrix_nosymm, self.end_idx_matrix_nosymm, self.col_idx_nosymm = \
@@ -902,6 +911,8 @@ class FHIAimsReader:
                 fwh.create_dataset(
                     'entries', data=self.electric_response_entries
                 )
+        
+        if self.with_momentum:
             # dump momentum matrix
             file_path = self.deeph_path / DEEPX_MOMENTUM_FILENAME
             with h5py.File(file_path, 'w') as fwh:
