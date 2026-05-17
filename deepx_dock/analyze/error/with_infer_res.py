@@ -1046,7 +1046,7 @@ class ErrorStructureDistributionAnalyzer(BaseAnalyzer):
         x_density = np.exp(x) * scale
         y_density = gaussian_kde(log_sorted_data)(x)
         y_density /= np.exp(x)
-        y_density /= np.trapz(y_density, x_density)
+        y_density /= np.trapezoid(y_density, x_density)
         x_mean = np.mean(self.errors) * scale
         #
         plt.rcParams["font.size"] = 16
