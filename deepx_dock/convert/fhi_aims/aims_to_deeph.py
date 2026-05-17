@@ -99,9 +99,13 @@ FILES_MX_IDX_NOSYMM = "rs_indices_nosymm.out"
 FILES_NECESSARY = set([AIMS_CONTROL_FILENAME, AIMS_STRUCT_FILENAME, AIMS_BASIS_FILENAME, FILES_MX_IDX])
 FILES_LOG = 'aims.out'
 FILES_IN = ["rs_overlap.out", "rs_hamiltonian.out"]
+FILES_IN_H0 = "rs_hamiltonian0.out"
 FILES_IN_SPIN = ["rs_overlap.out", "rs_hamiltonian_up.out", "rs_hamiltonian_dn.out"]  # not support spin orbit coupling yet
+FILES_IN_SPIN_H0 = ["rs_hamiltonian0_up.out", "rs_hamiltonian0_dn.out"]
 FILES_IN_HDF5 = ["rs_overlap.h5", "rs_hamiltonian.h5"]
+FILES_IN_H0_HDF5 = "rs_hamiltonian0.h5"
 FILES_IN_SPIN_HDF5 = ["rs_overlap.h5", "rs_hamiltonian_up.h5", "rs_hamiltonian_down.h5"]
+FILES_IN_SPIN_H0_HDF5 = ["rs_hamiltonian0_up.h5", "rs_hamiltonian0_dn.h5"]
 FILES_IN_ELECTRIC_RESPONSE = ["first_order_H_sparse_coord_2_spin_1.dat", "first_order_H_sparse_coord_3_spin_1.dat", "first_order_H_sparse_coord_1_spin_1.dat"]
 FILES_IN_MOMENTUM = ["rs_momentum_matrix2.dat", "rs_momentum_matrix3.dat", "rs_momentum_matrix1.dat"]
 FILES_OUT = [DEEPX_HAMILTONIAN_FILENAME, DEEPX_OVERLAP_FILENAME]
@@ -439,21 +443,39 @@ def _read_ovlp(aims_dir_path: Path, n_ham_size: int):
     ovlp_path = Path(aims_dir_path) / FILES_IN[0]
     return _read_mx_val(ovlp_path, n_ham_size)
 
-def _read_ham(aims_dir_path: Path, n_ham_size: int, spinful: bool):
+def _read_ham(aims_dir_path: Path, n_ham_size: int, spinful: bool, minus_H0: bool = False):
     if spinful:
         ham_up_path = Path(aims_dir_path) / FILES_IN_SPIN[1]
         ham_dn_path = Path(aims_dir_path) / FILES_IN_SPIN[2]
         ham_up_values = _read_mx_val(ham_up_path, n_ham_size) * HARTREE_TO_EV
         ham_dn_values = _read_mx_val(ham_dn_path, n_ham_size) * HARTREE_TO_EV
+        if minus_H0:
+            ham0_up_path = Path(aims_dir_path) / FILES_IN_SPIN_H0[0]
+            ham0_dn_path = Path(aims_dir_path) / FILES_IN_SPIN_H0[1]
+            ham0_up_values = _read_mx_val(ham0_up_path, n_ham_size) * HARTREE_TO_EV
+            ham0_dn_values = _read_mx_val(ham0_dn_path, n_ham_size) * HARTREE_TO_EV
+            ham_up_values -= ham0_up_values
+            ham_dn_values -= ham0_dn_values
         return ham_up_values, ham_dn_values
     else:
         ham_path = Path(aims_dir_path) / FILES_IN[1]
         ham_values = _read_mx_val(ham_path, n_ham_size) * HARTREE_TO_EV
+        if minus_H0:
+            ham0_path = Path(aims_dir_path) / FILES_IN_H0
+            ham0_values = _read_mx_val(ham0_path, n_ham_size) * HARTREE_TO_EV
+            ham_values -= ham0_values
         return ham_values
     
 def _parse_whether_electric_response(aims_dir_path: Path) -> bool:
     # if have FILES_IN_ELECTRIC_RESPONSE
     for in_path in FILES_IN_ELECTRIC_RESPONSE:
+        if (aims_dir_path / in_path).exists():
+            return True
+    return False
+
+def _parse_whether_momentum(aims_dir_path: Path) -> bool:
+    # if have FILES_IN_MOMENTUM
+    for in_path in FILES_IN_MOMENTUM:
         if (aims_dir_path / in_path).exists():
             return True
     return False
@@ -489,16 +511,27 @@ def _read_ovlp_hdf5(aims_dir_path: Path, n_ham_size: int):
     ovlp_path = Path(aims_dir_path) / FILES_IN_HDF5[0]
     return _read_mx_val_hdf5(ovlp_path, n_ham_size)
 
-def _read_ham_hdf5(aims_dir_path: Path, n_ham_size: int, spinful: bool):
+def _read_ham_hdf5(aims_dir_path: Path, n_ham_size: int, spinful: bool, minus_H0: bool = False):
     if spinful:
         ham_up_path = Path(aims_dir_path) / FILES_IN_SPIN_HDF5[1]
         ham_dn_path = Path(aims_dir_path) / FILES_IN_SPIN_HDF5[2]
         ham_up_values = _read_mx_val_hdf5(ham_up_path, n_ham_size) * HARTREE_TO_EV
         ham_dn_values = _read_mx_val_hdf5(ham_dn_path, n_ham_size) * HARTREE_TO_EV
+        if minus_H0:
+            ham0_up_path = Path(aims_dir_path) / FILES_IN_SPIN_H0_HDF5[0]
+            ham0_dn_path = Path(aims_dir_path) / FILES_IN_SPIN_H0_HDF5[1]
+            ham0_up_values = _read_mx_val_hdf5(ham0_up_path, n_ham_size) * HARTREE_TO_EV
+            ham0_dn_values = _read_mx_val_hdf5(ham0_dn_path, n_ham_size) * HARTREE_TO_EV
+            ham_up_values -= ham0_up_values
+            ham_dn_values -= ham0_dn_values
         return ham_up_values, ham_dn_values
     else:
         ham_path = Path(aims_dir_path) / FILES_IN_HDF5[1]
         ham_values = _read_mx_val_hdf5(ham_path, n_ham_size) * HARTREE_TO_EV
+        if minus_H0:
+            ham0_path = Path(aims_dir_path) / FILES_IN_H0_HDF5
+            ham0_values = _read_mx_val_hdf5(ham0_path, n_ham_size) * HARTREE_TO_EV
+            ham_values -= ham0_values
         return ham_values
 
 def _read_fermi(aims_dir_path: Path):
@@ -626,12 +659,14 @@ def _trans_electric_response_to_entries(start_idx_matrix:np.ndarray, end_idx_mat
 class PeriodicAimsDataTranslator:
     def __init__(self,
         aims_data_dir, deeph_data_dir, export_rho=False, export_r=False,
-        n_jobs=1, n_tier=0
+        minus_H0 = False,
+        n_jobs=-1, n_tier=0
     ):
         self.aims_data_dir = Path(aims_data_dir)
         self.deeph_data_dir = Path(deeph_data_dir)
         self.export_rho = export_rho
         self.export_r = export_r
+        self.minus_H0 = minus_H0
         self.n_jobs = n_jobs
         self.n_tier = n_tier
         self.deeph_data_dir.mkdir(parents=True, exist_ok=True)
@@ -642,6 +677,7 @@ class PeriodicAimsDataTranslator:
                          deeph_path=self.deeph_data_dir,
                          export_rho=self.export_rho,
                          export_r=self.export_r,
+                         minus_H0=self.minus_H0
         )
         data_dir_lister = get_data_dir_lister(
             self.aims_data_dir, self.n_tier, validation_check_aims
@@ -654,13 +690,13 @@ class PeriodicAimsDataTranslator:
 
     @staticmethod
     def transfer_one_aims_to_deeph(dir_name: str, aims_path: Path, deeph_path: Path,
-                                  export_rho=False, export_r=False):
+                                  export_rho=False, export_r=False, minus_H0=False):
         aims_dir_path = aims_path / dir_name
         if not aims_dir_path.is_dir():
             return
         deeph_dir_path = deeph_path / dir_name
         reader = FHIAimsReader(aims_dir_path, deeph_dir_path)
-        ierr = reader.analysis_data()
+        ierr = reader.analysis_data(minus_H0=minus_H0)
         reader.dump_data(export_rho=export_rho, export_r=export_r)
         return ierr
 
@@ -670,7 +706,7 @@ class FHIAimsReader:
         self.deeph_path = Path(deeph_path)
         self.mx_lst:list[np.ndarray] = []  # list of sparse matrix
 
-    def analysis_data(self):
+    def analysis_data(self, minus_H0=False):
         # ------------ calculation parameters from control.in ------------
         self.ctrl_params, self.spinful, self.aims_data_type = _read_ctrl_in(self.aims_path)  # DONE: plain / hdf5
         # ------------ structure info from geometry.in ------------
@@ -696,19 +732,19 @@ class FHIAimsReader:
         if self.aims_data_type == 'plain':
             self.mx_lst.append(_read_ovlp(self.aims_path, self.n_ham_size))
             if self.spinful:
-                ham_up_values, ham_dn_values = _read_ham(self.aims_path, self.n_ham_size, self.spinful)
+                ham_up_values, ham_dn_values = _read_ham(self.aims_path, self.n_ham_size, self.spinful, minus_H0=minus_H0)
                 self.mx_lst.append(ham_up_values)
                 self.mx_lst.append(ham_dn_values)
             else:
-                self.mx_lst.append(_read_ham(self.aims_path, self.n_ham_size, self.spinful))
+                self.mx_lst.append(_read_ham(self.aims_path, self.n_ham_size, self.spinful, minus_H0=minus_H0))
         elif self.aims_data_type == 'hdf5':
             self.mx_lst.append(_read_ovlp_hdf5(self.aims_path, self.n_ham_size))
             if self.spinful:
-                ham_up_values, ham_dn_values = _read_ham_hdf5(self.aims_path, self.n_ham_size, self.spinful)
+                ham_up_values, ham_dn_values = _read_ham_hdf5(self.aims_path, self.n_ham_size, self.spinful, minus_H0=minus_H0)
                 self.mx_lst.append(ham_up_values)
                 self.mx_lst.append(ham_dn_values)
             else:
-                self.mx_lst.append(_read_ham_hdf5(self.aims_path, self.n_ham_size, self.spinful))
+                self.mx_lst.append(_read_ham_hdf5(self.aims_path, self.n_ham_size, self.spinful, minus_H0=minus_H0))
         else:
             raise ValueError(f"Unsupported aims_data_type: {self.aims_data_type}!")
         # ------------ transform to deeph data structure ------------
@@ -749,12 +785,14 @@ class FHIAimsReader:
             self.entries_lst.append(np.concatenate(ham_entries_lst))
         # ------------ parse whether have electric response output file ---------------
         self.with_electric_response = _parse_whether_electric_response(self.aims_path)
+        self.with_momentum = _parse_whether_momentum(self.aims_path)
         if self.with_electric_response:
             # H(1) matrices
             self.first_order_matrices = _read_electric_response(self.aims_path, self.n_ham_size)
             _, self.electric_res_chunk_boundaries, self.electric_res_chunk_shapes, self.electric_response_entries = \
             _trans_electric_response_to_entries(self.start_idx_matrix, self.end_idx_matrix, self.col_idx, self.cell_indices,
             self.orbit_quantity_list, self.phase_factor, self.first_order_matrices, self.n_cells, self.n_basis, self.sub_idx)
+        if self.with_momentum:
             # momentum matrices
             self.n_ham_size_nosymm, self.n_cells_nosymm, self.n_basis_nosymm, self.cell_indices_nosymm, \
             self.start_idx_matrix_nosymm, self.end_idx_matrix_nosymm, self.col_idx_nosymm = \
@@ -873,6 +911,8 @@ class FHIAimsReader:
                 fwh.create_dataset(
                     'entries', data=self.electric_response_entries
                 )
+        
+        if self.with_momentum:
             # dump momentum matrix
             file_path = self.deeph_path / DEEPX_MOMENTUM_FILENAME
             with h5py.File(file_path, 'w') as fwh:

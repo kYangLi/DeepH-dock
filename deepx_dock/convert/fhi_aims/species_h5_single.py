@@ -53,6 +53,11 @@ class SpeciesModel:
     radius_grid_raw: List[np.ndarray]
     radius_data_raw: List[np.ndarray]
     kinetic_data_raw: List[np.ndarray]
+    val_density_nljz: np.ndarray
+    val_density_cutoff_radii: np.ndarray
+    val_density_grid_length: np.ndarray
+    val_density_radius_grid_raw: List[np.ndarray]
+    val_density_radius_data_raw: List[np.ndarray]
     fn_type_codes: np.ndarray
     orbital_index_local: np.ndarray
     control_meta: Dict[str, object]
@@ -68,6 +73,11 @@ class PackedSpeciesModel:
     radius_grid_padded: np.ndarray
     radius_data_padded: np.ndarray
     kinetic_data_padded: np.ndarray
+    val_density_nljz: np.ndarray
+    val_density_cutoff_radii: np.ndarray
+    val_density_grid_length: np.ndarray
+    val_density_radius_grid_padded: np.ndarray
+    val_density_radius_data_padded: np.ndarray
     fn_type_codes: np.ndarray
     orbital_index_local: np.ndarray
     control_meta: Dict[str, object]
@@ -91,6 +101,8 @@ PATTERN_CHAR_L = re.compile(
     r"^(?P<kin>kin_)?(?P<kind2>[a-z]{2})_"
     r"(?P<sp_idx>\d+)_(?P<i_fn>\d+)_(?P<n>\d+)_(?P<l>[a-z])\.dat$"
 )
+
+PATTERN_FREE_RHO = re.compile(r"^(?P<element>[A-Z][a-z]?)_free_rho\.dat$")
 
 
 def _strip_comment(line: str) -> str:
@@ -212,6 +224,13 @@ def _load_two_col_array(path: Path) -> np.ndarray:
     return arr
 
 
+def _extract_element_from_species_name(species_name: str) -> str:
+    match = re.match(r"^([A-Z][a-z]?)", species_name)
+    if match is None:
+        raise ValueError(f"E_BAD_SPECIES_NAME: cannot extract element from '{species_name}'")
+    return match.group(1)
+
+
 def parse_output_basis_run(run_dir: str | Path) -> List[RadialRecord]:
     """Parse output basis files in a run directory."""
     run_dir = Path(run_dir)
@@ -278,11 +297,62 @@ def parse_output_basis_run(run_dir: str | Path) -> List[RadialRecord]:
     return out
 
 
+def parse_free_rho_run(run_dir: str | Path) -> Dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Parse <Element>_free_rho.dat files for val_density export."""
+    run_dir = Path(run_dir)
+    if not run_dir.is_dir():
+        raise NotADirectoryError(f"run_dir is not a directory: {run_dir}")
+
+    free_rho_by_element: Dict[str, tuple[np.ndarray, np.ndarray]] = {}
+
+    for path in sorted(run_dir.glob("*_free_rho.dat")):
+        match = PATTERN_FREE_RHO.match(path.name)
+        if match is None:
+            continue
+
+        element = match.group("element")
+        if element in free_rho_by_element:
+            raise ValueError(f"E_DUP_FREE_RHO_FOR_ELEMENT: duplicated free rho file for element {element}")
+
+        arr = _load_two_col_array(path)
+        r = arr[:, 0].astype(np.float64)
+        rho = arr[:, 1].astype(np.float64)
+
+        if len(r) <= 1:
+            raise ValueError(f"E_TOO_SHORT_FREE_RHO: {path}")
+        if not np.all(np.isfinite(r)) or not np.all(np.isfinite(rho)):
+            raise ValueError(f"E_NONFINITE_FREE_RHO: {path}")
+        if np.any(np.diff(r) <= 0.0):
+            raise ValueError(f"E_NONMONOTONIC_FREE_RHO_GRID: {path}")
+
+        free_rho_by_element[element] = (r, rho)
+
+    if len(free_rho_by_element) == 0:
+        raise ValueError(f"E_MISSING_FREE_RHO_FILES: no *_free_rho.dat found in {run_dir}")
+
+    return free_rho_by_element
+
+
 def effective_last_index(u: np.ndarray, k: np.ndarray, tol: float) -> int:
     mask = (np.abs(u) > tol) | (np.abs(k) > tol)
     if np.any(mask):
         return int(np.where(mask)[0][-1])
     return int(len(u) - 1)
+
+
+def effective_last_index_1d(data: np.ndarray, tol: float, strict_nonzero: bool = False) -> int:
+    mask = np.abs(data) > tol
+    if np.any(mask):
+        return int(np.where(mask)[0][-1])
+    if strict_nonzero:
+        raise ValueError("E_ZERO_VAL_DENSITY: all points are below trimming tolerance")
+    return int(len(data) - 1)
+
+
+def convert_free_rho_output_to_rho(val_r: np.ndarray, val_density_raw: np.ndarray) -> np.ndarray:
+    """Convert AIMS free-rho output to rho(r): rho = d / (16*pi^2*r^2)."""
+    r_safe = np.where(np.abs(val_r) < 1e-15, 1e-15, val_r)
+    return val_density_raw / (16.0 * (np.pi**2) * (r_safe**2))
 
 
 def _kind2_to_code(kind2_values: Iterable[str]) -> np.ndarray:
@@ -291,10 +361,16 @@ def _kind2_to_code(kind2_values: Iterable[str]) -> np.ndarray:
     return np.asarray([table[v] for v in kind2_values], dtype=np.int32)
 
 
-def build_species_models(control: Dict[str, object], records: List[RadialRecord], tol: float = 5e-7):
+def build_species_models(
+    control: Dict[str, object],
+    records: List[RadialRecord],
+    run_dir: str | Path,
+    tol: float = 5e-7,
+):
     """Build species models from control mapping and parsed records."""
     order = control["species_order"]
     params = control["species_params"]
+    free_rho_by_element = parse_free_rho_run(run_dir)
 
     grouped: Dict[str, List[RadialRecord]] = {s: [] for s in order}
     for rec in records:
@@ -309,6 +385,17 @@ def build_species_models(control: Dict[str, object], records: List[RadialRecord]
 
     for species_name, recs in grouped.items():
         recs.sort(key=lambda x: (x.i_fn, x.n, x.l, x.kind2))
+
+        element = _extract_element_from_species_name(species_name)
+        if element not in free_rho_by_element:
+            raise ValueError(
+                f"E_MISSING_FREE_RHO_FOR_SPECIES: species={species_name}, expected {element}_free_rho.dat"
+            )
+
+        val_r_full, val_density_full_raw = free_rho_by_element[element]
+        val_density_full = convert_free_rho_output_to_rho(val_r_full, val_density_full_raw)
+        val_i_last = effective_last_index_1d(val_density_full, tol=tol, strict_nonzero=True)
+        val_n_eff = int(val_i_last + 1)
 
         nljz_rows = []
         cutoffs = []
@@ -348,6 +435,11 @@ def build_species_models(control: Dict[str, object], records: List[RadialRecord]
             radius_grid_raw=rgrid_rows,
             radius_data_raw=rdata_rows,
             kinetic_data_raw=kdata_rows,
+            val_density_nljz=np.asarray([[0, 0, 0, 1]], dtype=np.int32),
+            val_density_cutoff_radii=np.asarray([float(val_r_full[val_i_last])], dtype=np.float64),
+            val_density_grid_length=np.asarray([val_n_eff], dtype=np.int32),
+            val_density_radius_grid_raw=[val_r_full[:val_n_eff]],
+            val_density_radius_data_raw=[val_density_full[:val_n_eff]],
             fn_type_codes=_kind2_to_code(kind2_rows),
             orbital_index_local=np.arange(len(recs), dtype=np.int32),
             control_meta=params[species_name],
@@ -368,7 +460,15 @@ def pack_species_models(models: Dict[str, SpeciesModel], xc_functional: str) -> 
     if len(models) == 0:
         raise ValueError("No species model to pack")
 
-    global_nmax = max(int(np.max(m.grid_length)) for m in models.values() if len(m.grid_length) > 0)
+    global_nmax = 0
+    for model in models.values():
+        if len(model.grid_length) > 0:
+            global_nmax = max(global_nmax, int(np.max(model.grid_length)))
+        if len(model.val_density_grid_length) > 0:
+            global_nmax = max(global_nmax, int(np.max(model.val_density_grid_length)))
+
+    if global_nmax <= 0:
+        raise ValueError("Invalid global_nmax while packing species models")
 
     packed: Dict[str, PackedSpeciesModel] = {}
     for species_name, model in models.items():
@@ -381,6 +481,11 @@ def pack_species_models(models: Dict[str, SpeciesModel], xc_functional: str) -> 
             radius_grid_padded=_pad_rows(model.radius_grid_raw, global_nmax),
             radius_data_padded=_pad_rows(model.radius_data_raw, global_nmax),
             kinetic_data_padded=_pad_rows(model.kinetic_data_raw, global_nmax),
+            val_density_nljz=model.val_density_nljz,
+            val_density_cutoff_radii=model.val_density_cutoff_radii,
+            val_density_grid_length=model.val_density_grid_length,
+            val_density_radius_grid_padded=_pad_rows(model.val_density_radius_grid_raw, global_nmax),
+            val_density_radius_data_padded=_pad_rows(model.val_density_radius_data_raw, global_nmax),
             fn_type_codes=model.fn_type_codes,
             orbital_index_local=model.orbital_index_local,
             control_meta=model.control_meta,
@@ -439,6 +544,7 @@ def write_species_h5(output_file: str | Path, model: RunExportModel) -> None:
             grp.attrs["basis_source"] = "output basis"
             grp.attrs["xc_functional"] = model.xc_functional
             grp.attrs["radial_value_convention"] = "aims_output_basis_div_r"
+            grp.attrs["val_density_value_convention"] = "aims_output_free_rho_div_16pi2r2"
 
             basis = grp.create_group("basis")
             basis.create_dataset("nljz_list", data=sp.nljz)
@@ -447,6 +553,13 @@ def write_species_h5(output_file: str | Path, model: RunExportModel) -> None:
             basis.create_dataset("radius_grid", data=sp.radius_grid_padded, compression="gzip")
             basis.create_dataset("radius_data", data=sp.radius_data_padded, compression="gzip")
             basis.create_dataset("kinetic_data", data=sp.kinetic_data_padded, compression="gzip")
+
+            val_density = grp.create_group("val_density")
+            val_density.create_dataset("nljz_list", data=sp.val_density_nljz)
+            val_density.create_dataset("cutoff_radii", data=sp.val_density_cutoff_radii)
+            val_density.create_dataset("grid_length", data=sp.val_density_grid_length)
+            val_density.create_dataset("radius_grid", data=sp.val_density_radius_grid_padded, compression="gzip")
+            val_density.create_dataset("radius_data", data=sp.val_density_radius_data_padded, compression="gzip")
 
             ext = grp.create_group("extensions")
             ext.create_dataset("orbital_index_local", data=sp.orbital_index_local)
@@ -533,6 +646,60 @@ def validate_species_h5(output_file: str | Path) -> None:
                 if not np.isclose(cutoff[i], rg[-1], atol=1e-10, rtol=1e-8):
                     raise ValueError(f"cutoff mismatch for {species_name}, row {i}")
 
+            v_path = f"{species_name}/val_density"
+            if v_path not in f:
+                raise ValueError(f"Missing group: {v_path}")
+
+            v = f[v_path]
+            val_required = [
+                "nljz_list",
+                "cutoff_radii",
+                "grid_length",
+                "radius_grid",
+                "radius_data",
+            ]
+            for key in val_required:
+                if key not in v:
+                    raise ValueError(f"Missing dataset: {v_path}/{key}")
+
+            vrows = int(v["nljz_list"].shape[0])
+            if vrows != 1:
+                raise ValueError(f"val_density nljz_list row count must be 1 for {species_name}")
+            if int(v["cutoff_radii"].shape[0]) != vrows:
+                raise ValueError(f"val_density row mismatch in cutoff_radii for {species_name}")
+            if int(v["grid_length"].shape[0]) != vrows:
+                raise ValueError(f"val_density row mismatch in grid_length for {species_name}")
+            if int(v["radius_grid"].shape[0]) != vrows:
+                raise ValueError(f"val_density row mismatch in radius_grid for {species_name}")
+            if int(v["radius_data"].shape[0]) != vrows:
+                raise ValueError(f"val_density row mismatch in radius_data for {species_name}")
+
+            if int(v["radius_grid"].shape[1]) != global_nmax:
+                raise ValueError(f"val_density global_nmax mismatch in radius_grid for {species_name}")
+            if int(v["radius_data"].shape[1]) != global_nmax:
+                raise ValueError(f"val_density global_nmax mismatch in radius_data for {species_name}")
+
+            expected_val_nljz = np.asarray([[0, 0, 0, 1]], dtype=np.int32)
+            if not np.array_equal(v["nljz_list"][:], expected_val_nljz):
+                raise ValueError(f"val_density nljz_list mismatch for {species_name}")
+
+            v_n_eff = int(v["grid_length"][0])
+            if v_n_eff <= 0:
+                raise ValueError(f"Non-positive val_density grid_length for {species_name}")
+
+            v_rg = v["radius_grid"][0, :v_n_eff]
+            if np.any(np.diff(v_rg) <= 0.0):
+                raise ValueError(f"val_density radius_grid not strictly increasing for {species_name}")
+
+            v_cutoff = float(v["cutoff_radii"][0])
+            if not np.isclose(v_cutoff, v_rg[-1], atol=1e-10, rtol=1e-8):
+                raise ValueError(f"val_density cutoff mismatch for {species_name}")
+
+            if not np.allclose(v["radius_grid"][0, v_n_eff:], 0.0, atol=1e-12, rtol=0.0):
+                raise ValueError(f"val_density padded radius_grid must be zero for {species_name}")
+            if not np.allclose(v["radius_data"][0, v_n_eff:], 0.0, atol=1e-12, rtol=0.0):
+                raise ValueError(f"val_density padded radius_data must be zero for {species_name}")
+
 
 def convert_single_run_to_species_h5(
     run_dir: str | Path,
@@ -544,7 +711,7 @@ def convert_single_run_to_species_h5(
     run_dir = Path(run_dir)
     control = parse_control_species(run_dir / "control.in")
     records = parse_output_basis_run(run_dir)
-    models = build_species_models(control, records, tol=tol)
+    models = build_species_models(control, records, run_dir=run_dir, tol=tol)
 
     xc = xc_functional.lower() if xc_functional else str(control["xc_functional"]).lower()
     if not xc or xc == "unknown":
@@ -565,7 +732,7 @@ def _build_arg_parser():
     parser.add_argument("run_dir", type=Path, help="Run directory containing control.in and basis dat files")
     parser.add_argument("output_h5", type=Path, help="Output species HDF5 path")
     parser.add_argument("--xc-functional", type=str, default=None, help="Override xc functional in output attrs")
-    parser.add_argument("--tol", type=float, default=5e-7, help="Tail truncation tolerance")
+    parser.add_argument("--tol", type=float, default=5e-7, help="Tail truncation tolerance for basis/val_density")
     return parser
 
 

@@ -102,7 +102,7 @@ def _extract_single_run(run_dir: Path, tol: float) -> RunSpeciesResult:
     try:
         control = parse_control_species(run_dir / "control.in")
         records = parse_output_basis_run(run_dir)
-        models = build_species_models(control, records, tol=tol)
+        models = build_species_models(control, records, run_dir=run_dir, tol=tol)
     except Exception as exc:
         raise RuntimeError(f"{run_dir}: {exc}") from exc
 
@@ -144,6 +144,16 @@ def _species_models_equal(a: SpeciesModel, b: SpeciesModel, atol: float = 1e-10,
     if not _rows_close(a.radius_data_raw, b.radius_data_raw, atol=atol, rtol=rtol):
         return False
     if not _rows_close(a.kinetic_data_raw, b.kinetic_data_raw, atol=atol, rtol=rtol):
+        return False
+    if not np.array_equal(a.val_density_nljz, b.val_density_nljz):
+        return False
+    if not np.array_equal(a.val_density_grid_length, b.val_density_grid_length):
+        return False
+    if not np.allclose(a.val_density_cutoff_radii, b.val_density_cutoff_radii, atol=atol, rtol=rtol):
+        return False
+    if not _rows_close(a.val_density_radius_grid_raw, b.val_density_radius_grid_raw, atol=atol, rtol=rtol):
+        return False
+    if not _rows_close(a.val_density_radius_data_raw, b.val_density_radius_data_raw, atol=atol, rtol=rtol):
         return False
     return True
 
