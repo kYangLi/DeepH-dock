@@ -1045,7 +1045,7 @@ class ErrorStructureDistributionAnalyzer(BaseAnalyzer):
         y_accum = np.arange(1, len(sorted_data) + 1) / len(sorted_data)
         x_density = np.exp(x) * scale
         y_density = gaussian_kde(log_sorted_data)(x)
-        y_density /= np.exp(x)
+        # y_density /= np.exp(x) # DO NOT need this redist opt.
         y_density /= np.max(y_density)
         x_mean = np.mean(self.errors) * scale
         #
