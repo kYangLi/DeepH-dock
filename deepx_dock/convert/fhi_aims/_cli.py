@@ -125,6 +125,18 @@ def translate_cluster_aims_to_deeph(aims_dir: Path, deeph_dir: Path, tier_num: i
             type=click.Path(file_okay=False),
         ),
         click.option(
+            "--export_h",
+            type=bool,
+            default=True,
+            help="",
+        ),
+        click.option(
+            "--export_h0",
+            type=bool,
+            default=False,
+            help="",
+        ),
+        click.option(
             "--minus_h0",
             is_flag=True,
             help="Subtract H0 from the Hamiltonian."
@@ -149,6 +161,8 @@ def translate_cluster_aims_to_deeph(aims_dir: Path, deeph_dir: Path, tier_num: i
 def translate_periodic_aims_to_deeph(
     aims_dir: Path,
     deeph_dir: Path,
+    export_h: bool,
+    export_h0: bool,
     minus_h0: bool,
     jobs_num: int,
     tier_num: int,
@@ -165,7 +179,10 @@ def translate_periodic_aims_to_deeph(
     from deepx_dock.convert.fhi_aims.aims_to_deeph import PeriodicAimsDataTranslator
 
     translator = PeriodicAimsDataTranslator(
-        aims_dir, deeph_dir, export_rho=False, export_r=False, minus_H0=minus_h0, n_jobs=jobs_num, n_tier=tier_num
+        aims_dir, deeph_dir, export_H=export_h, export_H0=export_h0,
+        export_rho=False, export_r=False, 
+        minus_H0=minus_h0, 
+        n_jobs=jobs_num, n_tier=tier_num
     )
     translator.transfer_all_aims_to_deeph()
     click.echo("[done] Translation completed successfully!")
