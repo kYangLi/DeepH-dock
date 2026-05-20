@@ -16,6 +16,7 @@ from tqdm import tqdm
 import threadpoolctl
 
 from deepx_dock.parallel import parallel_map
+from deepx_dock.misc import set_num_threads
 from deepx_dock.compute.eigen.matrix_obj import AOMatrixObj
 
 
@@ -197,17 +198,11 @@ class HamiltonianObj(AOMatrixObj):
                     vals, vecs = eigh(Hk, Sk)
                     return vals, vecs
 
-        if parallel_k:
-            n_blas_threads = 1
-            with threadpoolctl.threadpool_limits(limits=n_blas_threads, user_api="blas"):
-                if n_jobs == 1:
-                    results = [process_k(k) for k in tqdm(ks, leave=False, desc="Diagonalizing")]
-                else:
-                    results = parallel_map(process_k, ks, n_jobs=n_jobs, desc="Diagonalizing")
-        else:
-            n_blas_threads = n_jobs
-            with threadpoolctl.threadpool_limits(limits=n_blas_threads, user_api="blas"):
-                results = [process_k(k) for k in tqdm(ks, leave=False, desc="Diagonalizing")]
+        n_blas_threads = 1 if parallel_k else n_jobs
+        n_jobs = n_jobs if parallel_k else 1
+        set_num_threads(n_blas_threads)
+        with threadpoolctl.threadpool_limits(limits=n_blas_threads, user_api="blas"):
+            results = parallel_map(process_k, ks, n_jobs=n_jobs, desc="Diagonalizing")
 
         if bands_only:
             return np.stack(results, axis=1)

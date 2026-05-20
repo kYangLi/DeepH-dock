@@ -3,6 +3,7 @@ import toml
 import json
 from typing import Callable, List, Any
 from pathlib import Path
+import os
 
 from deepx_dock.CONSTANT import PERIODIC_TABLE_SYMBOL_TO_INDEX
 
@@ -28,6 +29,17 @@ def load_toml_file(file_path):
 def dump_toml_file(file_path, dict_content):
     with open(file_path, "w") as f:
         toml.dump(dict_content, f)
+
+
+# ==============================================================================
+# Environment Variables
+# ==============================================================================
+def set_num_threads(thread_num):
+    os.environ["OMP_NUM_THREADS"] = str(thread_num)
+    os.environ["MKL_NUM_THREADS"] = str(thread_num)
+    os.environ["OPENBLAS_NUM_THREADS"] = str(thread_num)
+    os.environ["NUMEXPR_NUM_THREADS"] = str(thread_num)
+    os.environ["VECLIB_MAXIMUM_THREADS"] = str(thread_num)
 
 
 # ==============================================================================

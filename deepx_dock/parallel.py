@@ -1,17 +1,22 @@
 """
-Parallel processing utilities using ThreadPoolExecutor.
+Parallel processing utilities.
 
-This module provides a simple and efficient parallel processing interface
-using Python's standard library ThreadPoolExecutor. It's designed to replace
-joblib.Parallel for better memory efficiency and faster startup.
+This module provides a parallel map interface supporting two backends:
+- ThreadPoolExecutor: better memory efficiency and faster startup.
+- joblib: suitable for CPU-bound tasks that hold the GIL.
 """
 
 from concurrent.futures import ThreadPoolExecutor
+from joblib import Parallel, delayed
 from typing import Callable, Iterable, TypeVar, List
 from tqdm import tqdm
 
+from deepx_dock.CONSTANT import PARALLEL_BACKEND_DEFAULT
+from deepx_dock.CONSTANT import PARALLEL_BACKEND_VALID
+
 T = TypeVar("T")
 R = TypeVar("R")
+
 
 
 def parallel_map(
@@ -19,28 +24,32 @@ def parallel_map(
     items: Iterable[T],
     n_jobs: int = -1,
     desc: str = "Processing",
+    backend: str = PARALLEL_BACKEND_DEFAULT,
 ) -> List[R]:
     """
-    Parallel map using ThreadPoolExecutor.
-
-    This function provides a simple interface for parallel processing,
-    similar to joblib.Parallel but using ThreadPoolExecutor for better
-    memory efficiency and faster startup.
+    Parallel map with selectable backend.
 
     Parameters
     ----------
     func : Callable[[T], R]
-        Function to apply to each item. Should be thread-safe.
+        Function to apply to each item. Should be thread-safe when using
+        the 'thread' backend.
     items : Iterable[T]
         Items to process. Will be converted to a list internally.
     n_jobs : int, optional
         Number of parallel jobs:
         - -1: Auto-detect (use all available cores)
-        - 1: Sequential execution (no threading overhead)
-        - N > 1: Use N threads
+        - 1: Sequential execution
+        - N > 1: Parallel execution by N workers
         Default: -1
     desc : str, optional
         Description for progress bar. Default: "Processing"
+    backend : str, optional
+        Parallelization backend:
+        - 'thread': ThreadPoolExecutor (default, memory-efficient,
+          ideal for numpy/h5py/scipy that release the GIL)
+        - 'joblib': joblib.Parallel (for CPU-bound tasks holding the GIL)
+        Default: PARALLEL_BACKEND_DEFAULT (defined in CONSTANT.py)
 
     Returns
     -------
@@ -49,6 +58,8 @@ def parallel_map(
 
     Raises
     ------
+    ValueError
+        If backend is not 'thread' or 'joblib'.
     Exception
         Any exception raised by func will be propagated.
 
@@ -70,6 +81,7 @@ def parallel_map(
     ...     matrix = np.random.rand(n, n)
     ...     return np.linalg.eigvals(matrix)
     >>> results = parallel_map(compute_eigenvalues, [100, 100, 100], n_jobs=-1)
+    >>> results = parallel_map(process, range(10), n_jobs=4, backend='joblib')
 
     Notes
     -----
@@ -85,16 +97,23 @@ def parallel_map(
     --------
     concurrent.futures.ThreadPoolExecutor : The underlying executor.
     """
-    items = list(items)  # Convert to list for tqdm total
+    total = len(items) if hasattr(items, '__len__') else None
 
     if n_jobs == 1:
         # Sequential execution (faster for small tasks, no threading overhead)
-        return [func(item) for item in tqdm(items, desc=desc)]
+        return [func(item) for item in tqdm(items, total=total, desc=desc)]
 
-    # Parallel execution with ThreadPoolExecutor
-    max_workers = None if n_jobs < 0 else n_jobs
+    if "thread" == backend:
+        max_workers = None if n_jobs < 0 else n_jobs
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            return list(
+                tqdm(executor.map(func, items), total=total, desc=desc)
+            )
+    elif "joblib" == backend:
+        return Parallel(n_jobs=n_jobs, return_as="list")(
+            delayed(func)(item)
+            for item in tqdm(items, total=total, desc=desc)
+        )
+    else:
+        raise ValueError(f"Unknown parallel backend: {backend}. Choose from {PARALLEL_BACKEND_VALID}.")
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        results = list(tqdm(executor.map(func, items), total=len(items), desc=desc))
-
-    return results
