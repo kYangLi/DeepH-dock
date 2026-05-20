@@ -90,6 +90,7 @@ HARTREE_TO_EV = 27.2113845 # 27.211386
 
 DEEPX_ELECTRIC_RESPONSE_FILENAME = "electric_response.h5"
 DEEPX_MOMENTUM_FILENAME = "momentum.h5"
+DEEPX_HAMILTONIAN0_FILENAME = "hamiltonian0.h5"
 
 AIMS_CONTROL_FILENAME = "control.in"
 AIMS_STRUCT_FILENAME = "geometry.in"
@@ -465,7 +466,19 @@ def _read_ham(aims_dir_path: Path, n_ham_size: int, spinful: bool, minus_H0: boo
             ham0_values = _read_mx_val(ham0_path, n_ham_size) * HARTREE_TO_EV
             ham_values -= ham0_values
         return ham_values
-    
+
+def _read_ham0(aims_dir_path: Path, n_ham_size: int, spinful: bool):
+    if spinful:
+        ham0_up_path = Path(aims_dir_path) / FILES_IN_SPIN_H0[0]
+        ham0_dn_path = Path(aims_dir_path) / FILES_IN_SPIN_H0[1]
+        ham0_up_values = _read_mx_val(ham0_up_path, n_ham_size) * HARTREE_TO_EV
+        ham0_dn_values = _read_mx_val(ham0_dn_path, n_ham_size) * HARTREE_TO_EV
+        return ham0_up_values, ham_dn_values
+    else:
+        ham0_path = Path(aims_dir_path) / FILES_IN_H0
+        ham0_values = _read_mx_val(ham0_path, n_ham_size) * HARTREE_TO_EV
+        return ham0_values
+
 def _parse_whether_electric_response(aims_dir_path: Path) -> bool:
     # if have FILES_IN_ELECTRIC_RESPONSE
     for in_path in FILES_IN_ELECTRIC_RESPONSE:
@@ -533,6 +546,18 @@ def _read_ham_hdf5(aims_dir_path: Path, n_ham_size: int, spinful: bool, minus_H0
             ham0_values = _read_mx_val_hdf5(ham0_path, n_ham_size) * HARTREE_TO_EV
             ham_values -= ham0_values
         return ham_values
+
+def _read_ham0_hdf5(aims_dir_path: Path, n_ham_size: int, spinful: bool):
+    if spinful:
+        ham0_up_path = Path(aims_dir_path) / FILES_IN_SPIN_H0_HDF5[0]
+        ham0_dn_path = Path(aims_dir_path) / FILES_IN_SPIN_H0_HDF5[1]
+        ham0_up_values = _read_mx_val(ham0_up_path, n_ham_size) * HARTREE_TO_EV
+        ham0_dn_values = _read_mx_val(ham0_dn_path, n_ham_size) * HARTREE_TO_EV
+        return ham0_up_values, ham_dn_values
+    else:
+        ham0_path = Path(aims_dir_path) / FILES_IN_H0_HDF5
+        ham0_values = _read_mx_val(ham0_path, n_ham_size) * HARTREE_TO_EV
+        return ham0_values
 
 def _read_fermi(aims_dir_path: Path):
     log_path = Path(aims_dir_path) / FILES_LOG
@@ -658,12 +683,16 @@ def _trans_electric_response_to_entries(start_idx_matrix:np.ndarray, end_idx_mat
 
 class PeriodicAimsDataTranslator:
     def __init__(self,
-        aims_data_dir, deeph_data_dir, export_rho=False, export_r=False,
+        aims_data_dir, deeph_data_dir, 
+        export_H=True, export_H0=False,
+        export_rho=False, export_r=False,
         minus_H0 = False,
         n_jobs=-1, n_tier=0
     ):
         self.aims_data_dir = Path(aims_data_dir)
         self.deeph_data_dir = Path(deeph_data_dir)
+        self.export_H = export_H
+        self.export_H0 = export_H0
         self.export_rho = export_rho
         self.export_r = export_r
         self.minus_H0 = minus_H0
@@ -675,6 +704,8 @@ class PeriodicAimsDataTranslator:
         worker = partial(self.transfer_one_aims_to_deeph,
                          aims_path=self.aims_data_dir,
                          deeph_path=self.deeph_data_dir,
+                         export_H = self.export_H,
+                         export_H0 = self.export_H0,
                          export_rho=self.export_rho,
                          export_r=self.export_r,
                          minus_H0=self.minus_H0
@@ -690,21 +721,26 @@ class PeriodicAimsDataTranslator:
 
     @staticmethod
     def transfer_one_aims_to_deeph(dir_name: str, aims_path: Path, deeph_path: Path,
+                                  export_H = True,  export_H0 = False,
                                   export_rho=False, export_r=False, minus_H0=False):
         aims_dir_path = aims_path / dir_name
         if not aims_dir_path.is_dir():
             return
         deeph_dir_path = deeph_path / dir_name
-        reader = FHIAimsReader(aims_dir_path, deeph_dir_path)
+        reader = FHIAimsReader(aims_dir_path, deeph_dir_path, export_H, export_H0, export_rho, export_r)
         ierr = reader.analysis_data(minus_H0=minus_H0)
-        reader.dump_data(export_rho=export_rho, export_r=export_r)
+        reader.dump_data()
         return ierr
 
 class FHIAimsReader:
-    def __init__(self, aims_path: str | Path, deeph_path: str | Path):
+    def __init__(self, aims_path: str | Path, deeph_path: str | Path,
+                export_H = True,  export_H0 = False, 
+                export_rho=False, export_r=False,):
         self.aims_path = Path(aims_path)
         self.deeph_path = Path(deeph_path)
         self.mx_lst:list[np.ndarray] = []  # list of sparse matrix
+        self.export_H = export_H; self.export_H0 = export_H0
+        self.export_rho = export_rho; self.export_r = export_r
 
     def analysis_data(self, minus_H0=False):
         # ------------ calculation parameters from control.in ------------
@@ -731,20 +767,35 @@ class FHIAimsReader:
         self.mx_lst = []
         if self.aims_data_type == 'plain':
             self.mx_lst.append(_read_ovlp(self.aims_path, self.n_ham_size))
-            if self.spinful:
-                ham_up_values, ham_dn_values = _read_ham(self.aims_path, self.n_ham_size, self.spinful, minus_H0=minus_H0)
-                self.mx_lst.append(ham_up_values)
-                self.mx_lst.append(ham_dn_values)
-            else:
-                self.mx_lst.append(_read_ham(self.aims_path, self.n_ham_size, self.spinful, minus_H0=minus_H0))
+            if self.export_H:
+                if self.spinful:
+                    ham_up_values, ham_dn_values = _read_ham(self.aims_path, self.n_ham_size, self.spinful, minus_H0=minus_H0)
+                    self.mx_lst.append(ham_up_values)
+                    self.mx_lst.append(ham_dn_values)
+                else:
+                    self.mx_lst.append(_read_ham(self.aims_path, self.n_ham_size, self.spinful, minus_H0=minus_H0))
+            if self.export_H0:
+                if self.spinful:
+                    ham0_up_values, ham0_dn_values = _read_ham0(self.aims_path, self.n_ham_size, self.spinful)
+                    self.ham0_lst = [ham0_up_values, ham0_dn_values]
+                else:
+                    self.ham0_lst = [_read_ham0(self.aims_path, self.n_ham_size, self.spinful)]
         elif self.aims_data_type == 'hdf5':
             self.mx_lst.append(_read_ovlp_hdf5(self.aims_path, self.n_ham_size))
-            if self.spinful:
-                ham_up_values, ham_dn_values = _read_ham_hdf5(self.aims_path, self.n_ham_size, self.spinful, minus_H0=minus_H0)
-                self.mx_lst.append(ham_up_values)
-                self.mx_lst.append(ham_dn_values)
-            else:
-                self.mx_lst.append(_read_ham_hdf5(self.aims_path, self.n_ham_size, self.spinful, minus_H0=minus_H0))
+            if self.export_H:
+                if self.spinful:
+                    ham_up_values, ham_dn_values = _read_ham_hdf5(self.aims_path, self.n_ham_size, self.spinful, minus_H0=minus_H0)
+                    self.mx_lst.append(ham_up_values)
+                    self.mx_lst.append(ham_dn_values)
+                else:
+                    self.mx_lst.append(_read_ham_hdf5(self.aims_path, self.n_ham_size, self.spinful, minus_H0=minus_H0))
+            if self.export_H0:
+                if self.spinful:
+                    ham0_up_values, ham0_dn_values = _read_ham0_hdf5(self.aims_path, self.n_ham_size, self.spinful)
+                    self.ham0_lst = [ham0_up_values, ham0_dn_values]
+                else:
+                    self.ham0_lst = [_read_ham0_hdf5(self.aims_path, self.n_ham_size, self.spinful)]
+        
         else:
             raise ValueError(f"Unsupported aims_data_type: {self.aims_data_type}!")
         # ------------ transform to deeph data structure ------------
@@ -752,37 +803,25 @@ class FHIAimsReader:
             self.start_idx_matrix, self.end_idx_matrix, self.col_idx, self.cell_indices,
             self.orbit_quantity_list, self.phase_factor, self.mx_lst, self.n_cells, self.n_basis, self.sub_idx
         )
+        if self.export_H0:
+            _, _, _, self.ham0_entries_lst = _trans_mxs_to_entries(
+                self.start_idx_matrix, self.end_idx_matrix, self.col_idx, self.cell_indices,
+                self.orbit_quantity_list, self.phase_factor, self.ham0_lst, self.n_cells, self.n_basis, self.sub_idx
+            )
         # ------------ spin concatenate if necessary ------------
         if self.spinful:
-            ham_up_entries = self.entries_lst[1]
-            ham_dn_entries = self.entries_lst[2]
-            # Reset entries list to keep only [0] (Overlap)
-            self.entries_lst = [self.entries_lst[0]]
-            
-            ham_entries_lst = []
-            for idx_pair, _chunk_shape in enumerate(self.chunk_shapes):
-                n_rows, n_cols = _chunk_shape
-                # Extract up/down blocks (flattened)
-                start = self.chunk_boundaries[idx_pair]
-                end = self.chunk_boundaries[idx_pair+1]
-                block_up_flat = ham_up_entries[start:end]
-                block_dn_flat = ham_dn_entries[start:end]
+            if  self.export_H:
+                ham_up_entries = self.entries_lst[1]
+                ham_dn_entries = self.entries_lst[2]
+                # Reset entries list to keep only [0] (Overlap)
+                self.entries_lst = [self.entries_lst[0]]
                 
-                # Reshape to 2D
-                block_up = block_up_flat.reshape(n_rows, n_cols)
-                block_dn = block_dn_flat.reshape(n_rows, n_cols)
+                ham_spin_entries = self._spin_concatenate(ham_up_entries, ham_dn_entries)
                 
-                # Create 2x2 spinor block
-                #   [ UU  UD ]
-                #   [ DU  DD ]
-                # For collinear: UD=0, DU=0
-                block_spin = np.zeros((2*n_rows, 2*n_cols), dtype=np.complex128)
-                block_spin[0:n_rows, 0:n_cols] = block_up
-                block_spin[n_rows:, n_cols:] = block_dn
-
-                ham_entries_lst.append(block_spin.flatten())
-            
-            self.entries_lst.append(np.concatenate(ham_entries_lst))
+                self.entries_lst.append(ham_spin_entries)
+            if self.export_H0:
+                ham0_spin_entries = self._spin_concatenate(self.ham0_entries_lst[0], self.ham0_entries_lst[1])
+                self.ham0_entries_lst = [ham0_spin_entries]
         # ------------ parse whether have electric response output file ---------------
         self.with_electric_response = _parse_whether_electric_response(self.aims_path)
         self.with_momentum = _parse_whether_momentum(self.aims_path)
@@ -810,7 +849,7 @@ class FHIAimsReader:
         else:
             return -1
 
-    def dump_data(self, export_rho=False, export_r=False):
+    def dump_data(self):
         # ------------ make deeph data dir ------------
         self.deeph_path.mkdir(parents=True, exist_ok=True)
         # ------------ dump POSCAR ------------
@@ -820,10 +859,39 @@ class FHIAimsReader:
         # ------------ dump overlap.h5 ------------
         self._dump_S()
         # ------------ dump hamiltonian.h5 ------------
-        self._dump_H()
+        if self.export_H:
+            self._dump_H()
+        if self.export_H0:
+            self._dump_H0()
         # ------------ dump electric_response.h5 ------
         self._dump_electric_response()
 
+    def _spin_concatenate(self, up_entries, dn_entries):
+        
+        entries_lst = []
+        for idx_pair, _chunk_shape in enumerate(self.chunk_shapes):
+            n_rows, n_cols = _chunk_shape
+            # Extract up/down blocks (flattened)
+            start = self.chunk_boundaries[idx_pair]
+            end = self.chunk_boundaries[idx_pair+1]
+            block_up_flat = up_entries[start:end]
+            block_dn_flat = dn_entries[start:end]
+            
+            # Reshape to 2D
+            block_up = block_up_flat.reshape(n_rows, n_cols)
+            block_dn = block_dn_flat.reshape(n_rows, n_cols)
+            
+            # Create 2x2 spinor block
+            #   [ UU  UD ]
+            #   [ DU  DD ]
+            # For collinear: UD=0, DU=0
+            block_spin = np.zeros((2*n_rows, 2*n_cols), dtype=np.complex128)
+            block_spin[0:n_rows, 0:n_cols] = block_up
+            block_spin[n_rows:, n_cols:] = block_dn
+
+            entries_lst.append(block_spin.flatten())
+
+        return np.concatenate(entries_lst)
 
     def _dump_poscar(self):
         file_path = self.deeph_path / DEEPX_POSCAR_FILENAME
@@ -892,6 +960,26 @@ class FHIAimsReader:
             )
             fwh.create_dataset(
                 'entries', data=self.entries_lst[1]
+            )
+
+    def _dump_H0(self):
+        file_path = self.deeph_path / DEEPX_HAMILTONIAN0_FILENAME
+        # spinful: 4x entries (2N x 2N matrix), so boundaries * 4, shapes * 2
+        boundary_factor = 4 if self.spinful else 1
+        shape_factor = 2 if self.spinful else 1
+        
+        with h5py.File(file_path, 'w') as fwh:
+            fwh.create_dataset(
+                'atom_pairs', data=self.atom_pairs, dtype='i4'
+            )
+            fwh.create_dataset(
+                'chunk_boundaries', data=self.chunk_boundaries * boundary_factor, dtype='i4'
+            )
+            fwh.create_dataset(
+                'chunk_shapes', data=self.chunk_shapes * shape_factor, dtype='i4'
+            )
+            fwh.create_dataset(
+                'entries', data=self.ham0_entries_lst[0]
             )
 
     def _dump_electric_response(self):
