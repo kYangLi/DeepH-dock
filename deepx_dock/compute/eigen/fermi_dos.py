@@ -69,7 +69,10 @@ class FermiEnergyAndDOSGenerator:
             raise ValueError("Band occupation statistics show inconsistent patterns")
         return significant_cate > 1
 
-    def find_fermi_energy(self, dk=0.02, n_jobs=-1, parallel_k=True, method="counting"):
+    def find_fermi_energy(
+        self, k_mesh=(-1,-1,-1), dk=0.02, n_jobs=-1, parallel_k=True, method="counting"
+    ):
+        self.kpoint_density = self._decide_k_mesh(k_mesh, dk)
         fermi_json = self.data_path / FERMI_ENERGY_INFO_FILENAME
         if fermi_json.exists():
             with open(fermi_json, "r") as f:
@@ -84,7 +87,7 @@ class FermiEnergyAndDOSGenerator:
             raise ValueError(
                 f"occupation ({self.occupation}) is larger than the number of bands ({self.band_quantity * (2.0 - self.spinful)})"
             )
-        self._calc_eigvals_on_mesh(dk, n_jobs, parallel_k)
+        self._calc_eigvals_on_mesh(n_jobs, parallel_k)
         print(f"Determining fermi energy with method={method} ...")
         if "counting" == method:
             eigvals_flattened = self.eigvals.flatten()
@@ -103,9 +106,10 @@ class FermiEnergyAndDOSGenerator:
             raise ValueError(f"Unknown method: {method}")
 
     def calc_dos(
-        self, dk=0.02, emin=None, emax=None, enum=None, n_jobs=-1, parallel_k=True, method="gaussian", sigma=-1.0
+        self, k_mesh=(-1,-1,-1), dk=0.02, emin=None, emax=None, enum=None, n_jobs=-1, parallel_k=True, method="gaussian", sigma=-1.0
     ):
-        self._calc_eigvals_on_mesh(dk, n_jobs, parallel_k)
+        self.kpoint_density = self._decide_k_mesh(k_mesh, dk)
+        self._calc_eigvals_on_mesh(n_jobs, parallel_k)
         print(f"Calculating DOS with emin={emin} eV, emax={emax} eV, enum={enum}, method={method} ...")
         eigvals = self.eigvals - self.fermi_energy
         #
@@ -161,11 +165,19 @@ class FermiEnergyAndDOSGenerator:
         fig_save_path = self.data_path / f"dos.{plot_format}"
         plt.savefig(fig_save_path, format=plot_format, dpi=dpi)
 
-    def _calc_eigvals_on_mesh(self, dk, n_jobs, parallel_k=True):
+    def _decide_k_mesh(self, k_mesh, dk):
+        if np.all(np.array(k_mesh) > 0):
+            k_mesh = np.array(k_mesh)
+            print(f"Use k_mesh={k_mesh}")
+        else:
+            b_lengths = np.linalg.norm(self.reciprocal_lattice, axis=1)
+            k_mesh = np.ceil(b_lengths / dk).astype(int)
+            print(f"Use dk={dk} and k_mesh={k_mesh}")
+        return k_mesh
+
+    def _calc_eigvals_on_mesh(self, n_jobs, parallel_k=True):
         if self.eigvals is not None:
             return
-        b_lengths = np.linalg.norm(self.reciprocal_lattice, axis=1)
-        self.kpoint_density = np.ceil(b_lengths / dk).astype(int)
         self.nktot = np.prod(self.kpoint_density)
         self.ks = np.stack(
             [
@@ -174,7 +186,6 @@ class FermiEnergyAndDOSGenerator:
             ],
             axis=1,
         )
-        print(f"Use dk={dk} and k_mesh={self.kpoint_density}")
         eigval_h5file = self.data_path / DEEPX_EIGVAL_FILENAME
         if eigval_h5file.exists() and self.ill_handler is None:
             with h5py.File(eigval_h5file, "r") as h5file:

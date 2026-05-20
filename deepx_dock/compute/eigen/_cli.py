@@ -161,6 +161,7 @@ def plot_band_data(data_path, energy_window):
             default="counting",
             help="Calculating method that is used for obtaining DOS.",
         ),
+        click.option("--kp-mesh", type=(int, int, int), default=(-1, -1, -1), help="The mesh of the k points (-1 means switching to kp-density mode)."),
         click.option("--kp-density", "-d", type=float, default=0.1, help="The density of the k points."),
         click.option(
             "--cache-res",
@@ -195,6 +196,7 @@ def find_fermi_energy(
     jobs_num,
     blas_parallel_mode,
     method,
+    kp_mesh,
     kp_density,
     cache_res,
     ill_method,
@@ -227,7 +229,7 @@ def find_fermi_energy(
 
     parallel_k = not blas_parallel_mode
     fd_fermi = FermiEnergyAndDOSGenerator(data_path, obj_H, ill_handler=ill_handler)
-    fd_fermi.find_fermi_energy(dk=kp_density, n_jobs=jobs_num, parallel_k=parallel_k, method=method)
+    fd_fermi.find_fermi_energy(k_mesh=kp_mesh, dk=kp_density, n_jobs=jobs_num, parallel_k=parallel_k, method=method)
     fd_fermi.dump_fermi_energy()
     if cache_res and fd_fermi.eigvals is not None:
         fd_fermi.dump_eigval_data()
@@ -259,6 +261,7 @@ def find_fermi_energy(
             default="gaussian",
             help="Calculating method that is used for obtaining DOS.",
         ),
+        click.option("--kp-mesh", type=(int, int, int), default=(-1, -1, -1), help="The mesh of the k points (-1 means switching to kp-density mode)."),
         click.option("--kp-density", "-d", type=float, default=0.1, help="The density of the k points."),
         click.option(
             "--energy-window",
@@ -302,6 +305,7 @@ def calc_dos_from_H(
     jobs_num,
     blas_parallel_mode,
     method,
+    kp_mesh,
     kp_density,
     energy_window,
     energy_num,
@@ -338,9 +342,10 @@ def calc_dos_from_H(
     parallel_k = not blas_parallel_mode
     fd_fermi = FermiEnergyAndDOSGenerator(data_path, obj_H, ill_handler=ill_handler)
     fermi_method = "counting" if method == "gaussian" else method
-    fd_fermi.find_fermi_energy(dk=kp_density, n_jobs=jobs_num, parallel_k=parallel_k, method=fermi_method)
+    fd_fermi.find_fermi_energy(k_mesh=kp_mesh, dk=kp_density, n_jobs=jobs_num, parallel_k=parallel_k, method=fermi_method)
     fd_fermi.dump_fermi_energy()
     fd_fermi.calc_dos(
+        k_mesh=kp_mesh,
         dk=kp_density,
         n_jobs=jobs_num,
         parallel_k=parallel_k,
