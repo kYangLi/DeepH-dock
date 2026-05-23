@@ -113,7 +113,7 @@ def _read_in_all_necessary_data(
         atoms_elem, elem_orbs_map, spinful, overlap
 
 def _get_overlap_mask(
-    atom_pairs, boundaries, shapes, overlap, atoms_elem, elem_orbs_map
+    atom_pairs, boundaries, shapes, overlap, atoms_elem, elem_orbs_map, spinful
 ):
     mask = np.zeros_like(overlap, dtype=bool)
     for i_ap, ap in enumerate(atom_pairs):
@@ -126,6 +126,7 @@ def _get_overlap_mask(
         elem_i, elem_j = atoms_elem[ap[3]], atoms_elem[ap[4]]
         overlap_chunk = overlap[boundaries[i_ap]:boundaries[i_ap+1]].reshape(shapes[i_ap])
         mask_chunk = np.zeros_like(overlap_chunk, dtype=bool)
+        mask_chunk = np.zeros(shapes[i_ap] // (1+spinful), dtype=bool)
         orb_i, orb_j = elem_orbs_map[elem_i], elem_orbs_map[elem_j]
         row_ = 0
         for li in orb_i:
@@ -136,34 +137,46 @@ def _get_overlap_mask(
                 _chunk= overlap_chunk[row_-(li*2+1):row_,col_-(lj*2+1):col_]
                 _mask = np.max(np.abs(_chunk)) > MASK_THRESHOLD
                 mask_chunk[row_-(li*2+1):row_,col_-(lj*2+1):col_] = _mask
+        if spinful:
+            mask_chunk = np.block(
+                [[mask_chunk, mask_chunk], [mask_chunk, mask_chunk]]
+            )
         mask[boundaries[i_ap]:boundaries[i_ap+1]] = mask_chunk.reshape(-1)
     return mask
 
 def _get_error_entries(
     pred_entries, bm_entries, overlap, standardize_gauge, consider_overlap_mask,
-    atom_pairs, boundaries, shapes, atoms_elem, elem_orbs_map,
-    fix_shape=False, return_bm_entries=False
+    atom_pairs, boundaries, shapes, atoms_elem, elem_orbs_map, spinful,
+    fix_shape=False, return_bm_entries=False, return_mask=False
 ):
-    if (not standardize_gauge) or (overlap is None):
-        errors = np.abs(pred_entries - bm_entries)
-    else:
-        if consider_overlap_mask:
-            _mask = _get_overlap_mask(
-                atom_pairs, boundaries, shapes, overlap, atoms_elem,
-                elem_orbs_map
-            )
-            if fix_shape:
-                pred_entries[np.logical_not(_mask)] = 0.0
-                bm_entries[np.logical_not(_mask)] = 0.0
-            else:
-                pred_entries = pred_entries[_mask]
-                bm_entries = bm_entries[_mask]
-                overlap = overlap[_mask]
+    _mask = None
+    if consider_overlap_mask and (overlap is not None):
+        _mask = _get_overlap_mask(
+            atom_pairs, boundaries, shapes, overlap, atoms_elem, elem_orbs_map,
+            spinful
+        )
+        if fix_shape:
+            pred_entries[np.logical_not(_mask)] = 0.0
+            bm_entries[np.logical_not(_mask)] = 0.0
+        else:
+            pred_entries = pred_entries[_mask]
+            bm_entries = bm_entries[_mask]
+            overlap = overlap[_mask]
+    if standardize_gauge and (overlap is not None):
         _mu = np.dot(pred_entries-bm_entries,overlap) / np.dot(overlap,overlap)
         errors = np.abs(pred_entries - bm_entries - _mu * overlap)
+    else:
+        errors = np.abs(pred_entries - bm_entries)
     if return_bm_entries:
-        return errors, bm_entries
-    return errors
+        if return_mask:
+            return errors, bm_entries, _mask
+        else:
+            return errors, bm_entries
+    else:
+        if return_mask:
+            return errors, _mask
+        else:
+            return errors
 
 
 # +------------------------------------------------------------------------+
@@ -299,7 +312,7 @@ class ErrorEachEntriesDistributionAnalyzer(BaseAnalyzer):
         abs_errs, bm_entries = _get_error_entries(
             pred_entries, bm_entries, overlap,
             self.standardize_gauge, self.consider_overlap_mask,
-            atom_pairs, boundaries, shapes, atoms_elem, elem_orbs_map,
+            atom_pairs, boundaries, shapes, atoms_elem, elem_orbs_map, spinful,
             return_bm_entries=True,
         )
         rel_errs = abs_errs * np.abs(bm_entries) / (
@@ -447,7 +460,7 @@ class ErrorOrbitalResoluteDistributionAnalyzer(BaseAnalyzer):
         pred_dft_dir, bm_dft_dir=None, target_name="H", 
         standardize_gauge=False, consider_overlap_mask=False,
         data_split_json=None, data_split_tags="train,validate,test",
-        cache_res=False, pred_only=False, onsite_only=False, n_jobs=1,
+        cache_res=False, pred_only=False, onsite_only=False, offsite_only=False, n_jobs=1,
         n_tier=0,
     ):
         super().__init__(
@@ -457,6 +470,7 @@ class ErrorOrbitalResoluteDistributionAnalyzer(BaseAnalyzer):
         )
         self.pred_only = pred_only
         self.onsite_only = onsite_only
+        self.offsite_only = offsite_only
         # Middle data
         self.elem_orbs_map = {}
         self.spinful = None
@@ -500,7 +514,7 @@ class ErrorOrbitalResoluteDistributionAnalyzer(BaseAnalyzer):
         _errors = _get_error_entries(
             pred_entries, bm_entries, overlap,
             self.standardize_gauge, self.consider_overlap_mask,
-            atom_pairs, boundaries, shapes, atoms_elem, elem_orbs_map,
+            atom_pairs, boundaries, shapes, atoms_elem, elem_orbs_map, spinful,
             fix_shape=True
         )
         # Parse the error chunks with elem-orb pairs
@@ -514,6 +528,9 @@ class ErrorOrbitalResoluteDistributionAnalyzer(BaseAnalyzer):
             count = 1
             #
             if self.onsite_only and (not _self_loop):
+                chunk_error = np.zeros_like(chunk_error)
+                count = 0
+            if self.offsite_only and _self_loop:
                 chunk_error = np.zeros_like(chunk_error)
                 count = 0
             #
@@ -648,7 +665,7 @@ class ErrorElementsPairDistributionAnalyzer(BaseAnalyzer):
         pred_dft_dir, bm_dft_dir=None, target_name="H", 
         standardize_gauge=False, consider_overlap_mask=False,
         data_split_json=None, data_split_tags="train,validate,test",
-        cache_res=False, pred_only=False, onsite_only=False, n_jobs=1,
+        cache_res=False, pred_only=False, onsite_only=False, offsite_only=False, n_jobs=1,
         n_tier=0,
     ):
         super().__init__(
@@ -658,6 +675,7 @@ class ErrorElementsPairDistributionAnalyzer(BaseAnalyzer):
         )
         self.pred_only = pred_only
         self.onsite_only = onsite_only
+        self.offsite_only = offsite_only
         # Middle data
         self.elem_list = {}
         self.spinful = None
@@ -697,7 +715,7 @@ class ErrorElementsPairDistributionAnalyzer(BaseAnalyzer):
         _errors = _get_error_entries(
             pred_entries, bm_entries, overlap,
             self.standardize_gauge, self.consider_overlap_mask,
-            atom_pairs, boundaries, shapes, atoms_elem, elem_orbs_map,
+            atom_pairs, boundaries, shapes, atoms_elem, elem_orbs_map, spinful,
             fix_shape=True
         )
         # Parse the error chunks with elem-orb pairs
@@ -711,6 +729,8 @@ class ErrorElementsPairDistributionAnalyzer(BaseAnalyzer):
             count = 1
             #
             if self.onsite_only and (not _self_loop):
+                chunk_error, count = 0.0, 0
+            if self.offsite_only and _self_loop:
                 chunk_error, count = 0.0, 0
             #
             atom_pairs_count[chunk_key] = atom_pairs_count.get(chunk_key, 0) + count
@@ -862,7 +882,7 @@ class ErrorElementsDistributionAnalyzer(BaseAnalyzer):
         _errors = _get_error_entries(
             pred_entries, bm_entries, overlap,
             self.standardize_gauge, self.consider_overlap_mask, 
-            atom_pairs, boundaries, shapes, atoms_elem, elem_orbs_map
+            atom_pairs, boundaries, shapes, atoms_elem, elem_orbs_map, spinful
         )
         _error = np.mean(_errors)
         # Return!
@@ -978,13 +998,15 @@ class ErrorStructureDistributionAnalyzer(BaseAnalyzer):
         pred_dft_dir, bm_dft_dir=None, target_name="H", 
         standardize_gauge=False, consider_overlap_mask=False,
         data_split_json=None, data_split_tags="train,validate,test",
-        cache_res=False, n_jobs=1, n_tier=0,
+        cache_res=False, onsite_only=False, offsite_only=False, n_jobs=1, n_tier=0,
     ):
         super().__init__(
             pred_dft_dir, bm_dft_dir, target_name,
             standardize_gauge, consider_overlap_mask,
             data_split_json, data_split_tags, cache_res, n_jobs, n_tier
         )
+        self.onsite_only = onsite_only
+        self.offsite_only = offsite_only
         self.cached_result_path = self.root_dir / f'{self.TAG}.json'
         # Result
         self.errors = None
@@ -1014,11 +1036,30 @@ class ErrorStructureDistributionAnalyzer(BaseAnalyzer):
             elem_orbs_map, _spinful, overlap = _read_in_all_necessary_data(
                 sid, target_name, self.bm_dft_dir, self.pred_dft_dir
             )
-        _errors = _get_error_entries(
+        _errors, _mask = _get_error_entries(
             pred_entries, bm_entries, overlap,
             self.standardize_gauge, self.consider_overlap_mask, 
-            atom_pairs, boundaries, shapes, atoms_elem, elem_orbs_map
+            atom_pairs, boundaries, shapes, atoms_elem, elem_orbs_map, _spinful,
+            fix_shape=True, return_mask=True
         )
+        if self.onsite_only or self.offsite_only:
+            _errors_filtered = []
+            for i_ap, ap in enumerate(atom_pairs):
+                elem_i, elem_j = atoms_elem[ap[3]], atoms_elem[ap[4]]
+                _self_loop = (ap[0]==0 and ap[1]==0 and ap[2]==0 and ap[3]==ap[4])
+                #
+                _error_chunk = _errors[boundaries[i_ap]:boundaries[i_ap+1]]
+                if _mask is not None:
+                    _mask_chunk = _mask[boundaries[i_ap]:boundaries[i_ap+1]]
+                    _error_chunk = _error_chunk[_mask_chunk]
+                if self.onsite_only and _self_loop:
+                    _errors_filtered.append(_error_chunk)
+                if self.offsite_only and (not _self_loop):
+                    _errors_filtered.append(_error_chunk)
+            _errors = np.concatenate(_errors_filtered)
+        else:
+            if _mask is not None:
+                _errors = _errors[_mask]
         _error = np.mean(_errors)
         # Return!
         return sid, _error

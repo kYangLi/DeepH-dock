@@ -145,6 +145,10 @@ def analyze_error_entries(
             help='Only analysis the onsite (self atom loop) values.'
         ),
         click.option(
+            '--offsite-only', is_flag=True,
+            help='Only analysis the offsite (non-self atom loop) values.'
+        ),
+        click.option(
             '--plot-z-range', '--zrange',type=(float, float), default=None,
             help='The lower and upper limit for plotting color map.'
         ),
@@ -158,7 +162,7 @@ def analyze_error_orbital(
     cache_res: bool, jobs_num: int, tier_num: int, plot_dpi: int,
     data_split_json: Optional[str], data_split_tags: str,
     not_standardize_gauge: bool, ignore_overlap_mask: bool,
-    pred_only: bool, onsite_only: bool, plot_z_range: List[float],
+    pred_only: bool, onsite_only: bool, offsite_only: bool, plot_z_range: List[float],
     log_scale: bool,
 ):
     from deepx_dock.analyze.error.with_infer_res import ErrorOrbitalResoluteDistributionAnalyzer
@@ -174,6 +178,7 @@ def analyze_error_orbital(
         cache_res=cache_res,
         pred_only=pred_only,
         onsite_only=onsite_only,
+        offsite_only=offsite_only,
         n_jobs=jobs_num,
         n_tier=tier_num,
     )
@@ -326,6 +331,10 @@ def analyze_error_element_logfile(
             help='Only analysis the onsite (self atom loop) values.'
         ),
         click.option(
+            '--offsite-only', is_flag=True,
+            help='Only analysis the offsite (non-self atom loop) values.'
+        ),
+        click.option(
             '--plot-z-range', '--zrange',type=(float, float), default=None,
             help='The upper limit for plotting color map.'
         ),
@@ -339,7 +348,7 @@ def analyze_error_element_pair(
     cache_res: bool, jobs_num: int, tier_num: int,
     plot_dpi: int, data_split_json: Optional[str], data_split_tags: str,
     not_standardize_gauge: bool, ignore_overlap_mask: bool,
-    pred_only: bool, onsite_only: bool, plot_z_range: List[float],
+    pred_only: bool, onsite_only: bool, offsite_only: bool, plot_z_range: List[float],
     log_scale: bool,
 ):
     from deepx_dock.analyze.error.with_infer_res import ErrorElementsPairDistributionAnalyzer
@@ -355,6 +364,7 @@ def analyze_error_element_pair(
         cache_res=cache_res,
         pred_only=pred_only,
         onsite_only=onsite_only,
+        offsite_only=offsite_only,
         n_jobs=jobs_num,
         n_tier=tier_num,
     )
@@ -380,6 +390,14 @@ def analyze_error_element_pair(
     cli_help="Structure distribution analysis (from inference results).",
     cli_args=COMMON_OPT + [
         click.option(
+            '--onsite-only', is_flag=True,
+            help='Only analysis the onsite (self atom loop) values.'
+        ),
+        click.option(
+            '--offsite-only', is_flag=True,
+            help='Only analysis the offsite (non-self atom loop) values.'
+        ),
+        click.option(
             '--xlims',
             type=(float, float),
             default=None,
@@ -398,6 +416,7 @@ def analyze_error_structure(
     target: str, cache_res: bool, jobs_num: int, tier_num: int,
     plot_dpi: int, data_split_json: Optional[str], data_split_tags: str,
     not_standardize_gauge: bool, ignore_overlap_mask: bool,
+    onsite_only: bool, offsite_only: bool, 
     xlims: Optional[Tuple[float, float]], ylims: Optional[Tuple[float, float]],
 ):
     from deepx_dock.analyze.error.with_infer_res import ErrorStructureDistributionAnalyzer
@@ -411,6 +430,8 @@ def analyze_error_structure(
         data_split_json=data_split_json,
         data_split_tags=data_split_tags,
         cache_res=cache_res,
+        onsite_only=onsite_only,
+        offsite_only=offsite_only,
         n_jobs=jobs_num,
         n_tier=tier_num,
     )
