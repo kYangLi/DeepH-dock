@@ -509,7 +509,7 @@ def _read_ham0(aims_dir_path: Path, n_ham_size: int, spinful: bool):
         ham0_dn_path = Path(aims_dir_path) / FILES_IN_SPIN_H0[1]
         ham0_up_values = _read_mx_val(ham0_up_path, n_ham_size) * HARTREE_TO_EV
         ham0_dn_values = _read_mx_val(ham0_dn_path, n_ham_size) * HARTREE_TO_EV
-        return ham0_up_values, ham_dn_values
+        return ham0_up_values, ham0_dn_values
     else:
         ham0_path = Path(aims_dir_path) / FILES_IN_H0
         ham0_values = _read_mx_val(ham0_path, n_ham_size) * HARTREE_TO_EV
