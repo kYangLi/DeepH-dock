@@ -4,6 +4,7 @@ import json
 import collections
 from pathlib import Path
 from ase.io import read
+import re
 
 from functools import partial
 
@@ -87,6 +88,10 @@ basis ref:
 '''
 
 HARTREE_TO_EV = 27.2113845 # 27.211386
+
+_MALFORMED_SCI_RE = re.compile(
+    r'^[+-]?\d+\.\d+[+-]\d+$'
+)
 
 DEEPX_ELECTRIC_RESPONSE_FILENAME = "electric_response.h5"
 DEEPX_MOMENTUM_FILENAME = "momentum.h5"
@@ -428,9 +433,40 @@ column_index_hamiltonian
             -np.array(cell_indices, dtype=int), \
             start_idx_matrix, end_idx_matrix, col_idx
 
+def _fix_loadtxt(file_path: Path, dtype = np.float64):
+    """np.loadtxt wrapper that handles malformed Fortran scientific notation.
+        
+    When Fortran writes a number too small for the field width, it drops the 'E',
+    e.g. '-0.69828765656-139' instead of '-0.69828765656E-139'.
+    Such values are treated as 0.0.
+    """
+    try:
+        return np.loadtxt(file_path, dtype)
+    except Exception:
+        with open(file_path, 'r') as f:
+            lines = f.readlines()
+        data = []
+        for line in lines:
+            tokens = line.split()
+            row = []
+            for token in tokens:
+                try:
+                    row.append(float(token))
+                except ValueError:
+                    if _MALFORMED_SCI_RE.match(token):
+                        row.append(0.0)
+                    else:
+                        raise ValueError(f"Cannot parse token: '{token}'")
+            if row:
+                data.append(row)
+        arr = np.array(data, dtype=dtype)
+        if arr.shape[1] == 1:
+            arr = arr.ravel()
+        return arr
+
 def _read_mx_val(file_path: Path, n_ham_size: int):
     # file type: txt, n_ham_size lines, each line: value, float64
-    mx_values = np.loadtxt(file_path, dtype=np.float64)
+    mx_values = _fix_loadtxt(file_path, dtype=np.float64)
 
     if mx_values.shape[0] == n_ham_size + 1:
         # Check if the extra value is indeed zero-padding (common in some aims outputs)
@@ -1022,3 +1058,4 @@ class FHIAimsReader:
     # DONE: only dump S by setting sc_iter_limit = 0
     # TODO: support non-collinear spin and SOC cases
     
+
