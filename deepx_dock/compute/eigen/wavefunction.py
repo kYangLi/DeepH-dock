@@ -31,7 +31,7 @@ class AOWfnObj:
     basis_dir_path : str | Path
         Directory path to the basis file.
     aocode : str
-        Atomic orbital code. Currently only supports "siesta".
+        Atomic orbital code. Currently only supports "siesta" and "openmx".
     kpts : np.ndarray
         k-points in reduced coordinates (fractional), shape (Nk, 3).
     wfnao : np.ndarray

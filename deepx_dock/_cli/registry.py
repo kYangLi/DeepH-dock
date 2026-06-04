@@ -11,6 +11,7 @@ class FunctionRegistry:
         cli_name: Optional[str] | None = None,
         cli_help: Optional[str] = "This developer let the code speak for itself by writing nothing.",
         cli_args: Optional[List] | None = None,
+        cli_default: bool = False,
     ):
         def decorator(func: Callable):
             # Prepare the function and module name
@@ -25,6 +26,7 @@ class FunctionRegistry:
                 'cli_name': cli_name or func_name,
                 'cli_help': cli_help or func.__doc__ or '',
                 'cli_args': cli_args or [],
+                'cli_default': cli_default,
             }
             # Establish the module tree
             module_parts = auto_module.split('.')

@@ -80,13 +80,36 @@ def _add_commands_to_group(curr_group: click.Group, module_parts):
         info = registry.get_function_info(module_func_name)
         if info:
             command = _create_command(info)
-            curr_group.add_command(command)
+            if info.get("cli_default", False):
+                curr_group.callback = command.callback
+                curr_group.params = command.params
+                curr_group.help = command.help
+                curr_group.invoke_without_command = True
+            else:
+                curr_group.add_command(command)
     # Deal with the sub-module inside current module
     submodules = registry.get_submodules(module_parts)
     for submodule_name in submodules:
         new_module_parts = module_parts + [submodule_name]
+        submodule_functions = registry.get_functions_in_module(new_module_parts)
+        submodule_default_info = None
+        for func_name in submodule_functions:
+            module_func_name = f"{'.'.join(new_module_parts)}.{func_name}"
+            info = registry.get_function_info(module_func_name)
+            if info and info.get("cli_default", False):
+                submodule_default_info = info
+                break
 
-        @curr_group.group(name=submodule_name)
+        if submodule_default_info and not registry.get_submodules(new_module_parts):
+            command = _create_command(submodule_default_info)
+            command.name = submodule_name
+            curr_group.add_command(command)
+            continue
+
+        @curr_group.group(
+            name=submodule_name,
+            context_settings={"help_option_names": ["-h", "--help"], "show_default": True},
+        )
         def sub_group(): ...
 
         # Recursion!

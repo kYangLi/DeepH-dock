@@ -1,25 +1,41 @@
-import click
 from pathlib import Path
 from typing import Optional
 
+import click
+
 from deepx_dock._cli.registry import register
-from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
-from deepx_dock.compute.overlap.openmx.calculator import (
+from deepx_dock.compute.overlap.overlap import (
     OPENMX_DEFAULT_ECUT,
     OPENMX_DEFAULT_KDENSE,
-    OPENMX_DEFAULT_RDENSE,
+    SIESTA_DEFAULT_ECUT,
+    default_ecut,
+    default_kdense,
+    save_overlap_from_files,
 )
 
 
-OPENMX_INPUT_FILENAME = "openmx_in.dat"
-
-
 @register(
-    cli_name="openmx",
-    cli_help="Calculate overlap matrix from OpenMX input(s) using species_openmx_{xc}.h5",
+    cli_name="overlap",
+    cli_help="Calculate AO overlap matrices from POSCAR and SIESTA/OpenMX basis files using HPRO.",
+    cli_default=True,
     cli_args=[
         click.argument("path", type=click.Path(exists=True)),
-        click.argument("species_file", type=click.Path()),
+        click.argument("basis_path", type=click.Path(exists=True, file_okay=False)),
+        click.argument("aocode", type=click.Choice(["siesta", "openmx"], case_sensitive=False)),
+        click.option(
+            "--spinful",
+            "--soc",
+            "-s",
+            is_flag=True,
+            help="Write spinful SOC-compatible overlap blocks.",
+        ),
+        click.option(
+            "--output-dir",
+            "-o",
+            type=click.Path(file_okay=False),
+            default=None,
+            help="Output directory for single-POSCAR mode. Defaults to the POSCAR directory.",
+        ),
         click.option(
             "--tier-num",
             "-t",
@@ -36,184 +52,150 @@ OPENMX_INPUT_FILENAME = "openmx_in.dat"
             help="Number of parallel jobs for batch processing. -1 for all cores.",
         ),
         click.option(
-            "--raw-species-dir",
-            type=click.Path(exists=True),
-            default=None,
-            help="Directory containing PAO/ and VPS/ subdirectories for auto-generation of species file",
-        ),
-        click.option(
             "--ecut",
             type=float,
-            default=OPENMX_DEFAULT_ECUT,
-            help=f"Energy cutoff (Hartree). kmax = sqrt(2*Ecut). Default: {OPENMX_DEFAULT_ECUT} Ha (OpenMX: 3600 Ry)",
+            default=None,
+            help=f"Fourier cutoff in Hartree. Defaults: SIESTA={SIESTA_DEFAULT_ECUT}, "
+            f"OpenMX={OPENMX_DEFAULT_ECUT}.",
         ),
         click.option(
             "--kdense",
             type=float,
-            default=OPENMX_DEFAULT_KDENSE,
-            help=f"k-space grid density. grid_nq = kmax * kdense. Default: {OPENMX_DEFAULT_KDENSE} (OpenMX: NumGridK=900 at kmax=60)",
+            default=None,
+            help=f"Reciprocal radial-grid density. Defaults: SIESTA=HPRO default, OpenMX={OPENMX_DEFAULT_KDENSE}.",
         ),
-        click.option(
-            "--rdense",
-            type=float,
-            default=OPENMX_DEFAULT_RDENSE,
-            help=f"r-space grid density (points/Bohr). Default: {OPENMX_DEFAULT_RDENSE} (OpenMX: NumGridR=900 for ~9 Bohr cutoff)",
-        ),
-        click.option("--force", is_flag=True, help="Force regenerate/overwrite"),
+        click.option("--force", is_flag=True, help="Overwrite an existing overlap.h5 file."),
     ],
 )
-def overlap_openmx(
+def overlap(
     path: str,
-    species_file: str,
+    basis_path: str,
+    aocode: str,
+    spinful: bool,
+    output_dir: Optional[str],
     tier_num: Optional[int],
     jobs_num: int,
-    raw_species_dir: Optional[str],
-    ecut: float,
-    kdense: float,
-    rdense: float,
+    ecut: Optional[float],
+    kdense: Optional[float],
     force: bool,
 ):
     """
-    Calculate overlap matrix from OpenMX input file(s).
+    Calculate overlap matrix files.
 
-    This command supports two modes:
-
-    \b
-    1. Single file mode (default, no --tier-num):
-       PATH is the OpenMX input file (e.g., openmx_in.dat).
-
-       Example:
-         dock compute overlap openmx ./openmx_in.dat ./species_openmx_pbe.h5
+    Examples:
 
     \b
-    2. Batch mode (with --tier-num):
-       PATH is a data directory. The command scans subdirectories
-       and processes each one containing openmx_in.dat.
-
-       Examples:
-         # Process subdirectories
-         dock compute overlap openmx ./data ./species_openmx_pbe.h5 -t 0
-
-         # Process current directory
-         dock compute overlap openmx ./data ./species_openmx_pbe.h5 -t -1
-
-         # With parallel jobs
-         dock compute overlap openmx ./data ./species_openmx_pbe.h5 -t 0 -j 4
-
-    \b
-    Species file:
-       Requires species_openmx_{xc}.h5 containing basis and pseudopotential data.
-       Use --raw-species-dir to auto-generate from PAO/VPS files.
-
-    \b
-    Output files (per data point):
-       - overlap.h5: Overlap matrix
-       - info.json: Metadata
-       - POSCAR: Crystal structure
-
-    \b
-    Grid parameters (OpenMX defaults):
-       --ecut 1800 Ha (OpenMX: 1DFFT.EnergyCutoff=3600 Ry)
-       --kdense 15 (OpenMX: NumGridK=900 at kmax=60)
-       --rdense 100 (OpenMX: NumGridR=900 for ~9 Bohr cutoff)
+      dock compute overlap path_to_poscar path_to_basis_files siesta
+      dock compute overlap path_to_poscar path_to_basis_files siesta -s
+      dock compute overlap path_to_poscar path_to_basis_files openmx
+      dock compute overlap path_to_poscar path_to_basis_files openmx -s
     """
-    path = Path(path)
-    species_file = Path(species_file)
-    raw_species_dir = Path(raw_species_dir) if raw_species_dir else None
+    path_obj = Path(path)
+    basis_path_obj = Path(basis_path)
+    aocode = aocode.lower()
+    ecut_to_use = default_ecut(aocode) if ecut is None else ecut
+    kdense_to_use = default_kdense(aocode) if kdense is None else kdense
 
     if tier_num is None:
-        _run_single(path, species_file, raw_species_dir, ecut, kdense, rdense, force)
+        _run_single(
+            path_obj,
+            basis_path_obj,
+            aocode,
+            spinful=spinful,
+            output_dir=Path(output_dir) if output_dir is not None else None,
+            ecut=ecut_to_use,
+            kdense=kdense_to_use,
+            force=force,
+        )
     else:
-        _run_batch(path, species_file, tier_num, jobs_num, raw_species_dir, force)
+        _run_batch(
+            path_obj,
+            basis_path_obj,
+            aocode,
+            tier_num=tier_num,
+            jobs_num=jobs_num,
+            spinful=spinful,
+            ecut=ecut_to_use,
+            kdense=kdense_to_use,
+            force=force,
+        )
 
 
 def _run_single(
-    openmx_input: Path,
-    species_file: Path,
-    raw_species_dir: Optional[Path],
+    poscar_path: Path,
+    basis_path: Path,
+    aocode: str,
+    *,
+    spinful: bool,
+    output_dir: Optional[Path],
     ecut: float,
-    kdense: float,
-    rdense: float,
+    kdense: Optional[float],
     force: bool,
 ) -> None:
-    """Run single file processing."""
-    from deepx_dock.compute.overlap.openmx.calculator import OpenMXOverlapCalculator
+    if not poscar_path.is_file():
+        raise click.ClickException(f"Single-POSCAR mode expects PATH to be a POSCAR file: {poscar_path}")
 
-    output_dir = openmx_input.parent
+    actual_output_dir = output_dir if output_dir is not None else poscar_path.parent
 
-    import numpy as np
+    click.echo("[info] HPRO overlap calculation")
+    click.echo(f"[info] POSCAR: {poscar_path}")
+    click.echo(f"[info] Basis directory: {basis_path}")
+    click.echo(f"[info] AO code: {aocode}")
+    click.echo(f"[info] Spinful: {spinful}")
+    click.echo(f"[info] Ecut: {ecut}")
+    click.echo(f"[info] kdense: {kdense if kdense is not None else 'HPRO default'}")
 
-    kmax = np.sqrt(2 * ecut)
-    grid_nq = int(kmax * kdense)
-
-    click.echo("=" * 60)
-    click.echo("[info] OpenMX Overlap Calculation (single file)")
-    click.echo("=" * 60)
-    click.echo(f"[info] Input file: {openmx_input}")
-    click.echo(f"[info] Species file: {species_file}")
-    click.echo()
-
-    click.echo("[info] Grid Parameters (OpenMX defaults):")
-    click.echo("-" * 40)
-    click.echo(f"  k-space: Ecut={ecut:.0f} Ha, kmax={kmax:.0f} Bohr^-1")
-    click.echo(f"           kdense={kdense:.0f}, grid_nq={grid_nq}")
-    click.echo(f"  r-space: rdense={rdense:.0f} Bohr^-1 (linear grid)")
-    click.echo()
-
-    calculator = OpenMXOverlapCalculator(
-        openmx_input=openmx_input,
-        species_file=species_file,
-        raw_species_dir=raw_species_dir,
+    save_overlap_from_files(
+        poscar_path,
+        basis_path,
+        aocode,
+        output_dir=actual_output_dir,
+        spinful=spinful,
         ecut=ecut,
         kdense=kdense,
-        rdense=rdense,
         force=force,
     )
 
-    click.echo("[info] Running calculation...")
-    click.echo()
-
-    calculator.run()
-
-    click.echo("=" * 60)
-    click.echo(f"[done] Results saved to {output_dir}")
-    click.echo(f"       - {DEEPX_OVERLAP_FILENAME}")
-    click.echo("       - info.json")
+    click.echo(f"[done] Results saved to {actual_output_dir}")
     click.echo("       - POSCAR")
-    click.echo("=" * 60)
+    click.echo("       - info.json")
+    click.echo("       - overlap.h5")
 
 
 def _run_batch(
     data_dir: Path,
-    species_file: Path,
+    basis_path: Path,
+    aocode: str,
+    *,
     tier_num: int,
-    n_jobs: int,
-    raw_species_dir: Optional[Path],
+    jobs_num: int,
+    spinful: bool,
+    ecut: float,
+    kdense: Optional[float],
     force: bool,
 ) -> None:
-    """Run batch processing."""
     from deepx_dock.compute.overlap.batch_calculator import BatchOverlapCalculator
 
-    click.echo("=" * 60)
-    click.echo("[info] OpenMX Overlap Calculation (batch)")
-    click.echo("=" * 60)
+    click.echo("[info] HPRO overlap batch calculation")
     click.echo(f"[info] Data directory: {data_dir}")
-    click.echo(f"[info] Species file: {species_file}")
+    click.echo(f"[info] Basis directory: {basis_path}")
+    click.echo(f"[info] AO code: {aocode}")
     click.echo(f"[info] Tier: {tier_num}")
-    click.echo(f"[info] Jobs: {n_jobs}")
-    click.echo()
+    click.echo(f"[info] Jobs: {jobs_num}")
+    click.echo(f"[info] Spinful: {spinful}")
+    click.echo(f"[info] Ecut: {ecut}")
+    click.echo(f"[info] kdense: {kdense if kdense is not None else 'HPRO default'}")
 
     calculator = BatchOverlapCalculator(
         data_dir=data_dir,
-        species_file=species_file,
+        basis_path=basis_path,
+        aocode=aocode,
         tier_num=tier_num,
-        n_jobs=n_jobs,
+        n_jobs=jobs_num,
+        spinful=spinful,
+        ecut=ecut,
+        kdense=kdense,
         force=force,
-        raw_species_dir=raw_species_dir,
     )
-
     calculator.run()
-
-    click.echo("=" * 60)
     click.echo("[done] Batch processing completed")
-    click.echo("=" * 60)
