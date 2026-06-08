@@ -70,11 +70,11 @@ class FermiEnergyAndDOSGenerator:
         return significant_cate > 1
 
     def find_fermi_energy(
-        self, k_mesh=(-1,-1,-1), dk=0.02, n_jobs=-1, parallel_k=True, method="counting"
+        self, k_mesh=(-1,-1,-1), dk=0.02, n_jobs=-1, parallel_k=True, method="counting", force_recalc=False
     ):
         self.kpoint_density = self._decide_k_mesh(k_mesh, dk)
         fermi_json = self.data_path / FERMI_ENERGY_INFO_FILENAME
-        if fermi_json.exists():
+        if fermi_json.exists() and (not force_recalc):
             with open(fermi_json, "r") as f:
                 self.fermi_energy = json.load(f).get("fermi_energy_eV", None)
                 print(f"Use cached fermi energy from {FERMI_ENERGY_INFO_FILENAME}")

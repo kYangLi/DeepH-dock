@@ -330,6 +330,8 @@ class AOMatrixObj:
 
         atom_pairs, bounds, shapes, entries = self._read_h5(matrix_path)
         self.atom_pairs = atom_pairs
+        self.bounds = bounds
+        self.shapes = shapes
 
         for i_ap, ap in enumerate(atom_pairs):
             Rijk = (ap[0], ap[1], ap[2])
@@ -373,6 +375,8 @@ class AOMatrixObj:
 
         atom_pairs, bounds, shapes, entries = self._read_h5(self.matrix_path, dtype=dtype)
         self.atom_pairs = atom_pairs
+        self.bounds = bounds
+        self.shapes = shapes
         bands_quantity = self.orbits_quantity * (1 + self.spinful)
 
         for i_ap, ap in enumerate(atom_pairs):
@@ -420,6 +424,64 @@ class AOMatrixObj:
 
         self.Rijk_list = Rijk_list
         self.mats = HR
+
+    def _build_entries_H_like(self, R_to_index=None, dtype=None):
+        """
+        Reverse of _parse_matrix_H_like: construct entries from atom_pairs, bounds, shapes, mats.
+
+        Returns
+        -------
+        entries : np.ndarray
+            Flattened matrix entries, ready to be written to HDF5.
+        """
+        bounds = self.bounds
+        shapes = self.shapes
+
+        if R_to_index is None:
+            R_to_index = {tuple(R): i_R for i_R, R in enumerate(self.Rijk_list)}
+        if dtype is None:
+            dtype = np.complex128 if self.spinful else np.float64
+        
+        entries = np.empty(bounds[-1], dtype=dtype)
+
+        for i_ap, ap in enumerate(self.atom_pairs):
+            R_ijk = (ap[0], ap[1], ap[2])
+            i_atom, j_atom = ap[3], ap[4]
+            i_R = R_to_index[R_ijk]
+            mat = self.mats[i_R]
+
+            if self.spinful:
+                _i_slice_up = slice(self.atom_num_orbits_cumsum[i_atom], self.atom_num_orbits_cumsum[i_atom + 1])
+                _i_slice_dn = slice(
+                    self.atom_num_orbits_cumsum[i_atom] + self.orbits_quantity,
+                    self.atom_num_orbits_cumsum[i_atom + 1] + self.orbits_quantity,
+                )
+                _j_slice_up = slice(self.atom_num_orbits_cumsum[j_atom], self.atom_num_orbits_cumsum[j_atom + 1])
+                _j_slice_dn = slice(
+                    self.atom_num_orbits_cumsum[j_atom] + self.orbits_quantity,
+                    self.atom_num_orbits_cumsum[j_atom + 1] + self.orbits_quantity,
+                )
+                _i_orb_num = self.atom_num_orbits[i_atom]
+                _j_orb_num = self.atom_num_orbits[j_atom]
+
+                chunk = np.empty((2 * _i_orb_num, 2 * _j_orb_num), dtype=dtype)
+                chunk[:_i_orb_num, :_j_orb_num] = mat[_i_slice_up, _j_slice_up]
+                chunk[:_i_orb_num, _j_orb_num:] = mat[_i_slice_up, _j_slice_dn]
+                chunk[_i_orb_num:, :_j_orb_num] = mat[_i_slice_dn, _j_slice_up]
+                chunk[_i_orb_num:, _j_orb_num:] = mat[_i_slice_dn, _j_slice_dn]
+            else:
+                _i_slice = slice(self.atom_num_orbits_cumsum[i_atom], self.atom_num_orbits_cumsum[i_atom + 1])
+                _j_slice = slice(self.atom_num_orbits_cumsum[j_atom], self.atom_num_orbits_cumsum[j_atom + 1])
+                chunk = mat[_i_slice, _j_slice]
+
+            expected_size = bounds[i_ap + 1] - bounds[i_ap]
+            flat_chunk = chunk.reshape(-1)
+            assert (
+                flat_chunk.shape[0] == expected_size
+            ), f"Chunk size mismatch at atom_pair {i_ap}: got {flat_chunk.shape[0]}, expected {expected_size}"
+            entries[bounds[i_ap] : bounds[i_ap + 1]] = flat_chunk
+
+        return entries
 
     def _sort_Rijk(self):
         """Sort Rijk_list in C-style row-major order (x fastest, z slowest)."""
