@@ -16,6 +16,7 @@ dft
   │   ├── overlap.h5
   │   ├── hamiltonian.h5     (optional)
   │   ├── density_matrix.h5  (optional)
+  │   ├── wavefunction_ao.h5 (optional)
   │   ├── potential_r.h5     (optional)
   │   ├── charge_density.h5  (optional)
   │   ├── force.h5           (optional)
@@ -36,6 +37,7 @@ dft
 | `overlap.h5` | Required | HDF5 | Overlap matrix (S) in sparse AO basis |
 | `hamiltonian.h5` | Optional | HDF5 | Hamiltonian matrix (H) |
 | `density_matrix.h5` | Optional | HDF5 | Density matrix |
+| `wavefunction_ao.h5` | Optional | HDF5 | Band eigenvalues and wavefunction coefficients in the AO basis |
 | `potential_r.h5` | Optional | HDF5 | Real-space potential matrix |
 | `charge_density.h5` | Optional | HDF5 | Charge density matrix |
 | `force.h5` | Optional | HDF5 | Atomic forces |
@@ -186,7 +188,56 @@ def extract_hamiltonian(filepath):
 H_matrices = extract_hamiltonian('hamiltonian.h5')
 ```
 
-### 4. Real-Space Grid-Resolved Properties
+### 4. AO Wavefunction Coefficients
+
+The `wavefunction_ao.h5` file stores band eigenvalues and the corresponding wavefunction coefficients in the atomic-orbital (AO) basis. It is written by `AOWfnObj.to_h5()`. If no output path is given, the default filename is `wavefunction_ao.h5` under the same data directory as `POSCAR` and `info.json`.
+It stores dense arrays indexed by k point, band, spinor, and AO orbital.
+
+Each `wavefunction_ao.h5` file can contain the following keys:
+
+| Key | Shape | Required | Description |
+| --- | ----- | -------- | ----------- |
+| `efermi` | scalar | Yes | Fermi energy associated with the eigenvalues, in eV |
+| `kpts` | `(N_k, 3)` | Yes | k-points in reduced reciprocal coordinates |
+| `kgrid` | `(3,)` | Optional | Monkhorst-Pack-style k-grid dimensions |
+| `eigenvalues` | usually `(N_band,)` | Yes | Band eigenvalues in eV. |
+| `eigenvectors` | `(N_k, N_band, N_spinor, N_orb)` | Yes | AO wavefunction coefficients $c_{n,j\beta}(\mathbf{k})$ after separating the spinor axis |
+
+The stored coefficients represent the AO coefficients in the Bloch wavefunction expansion
+
+$$
+\psi_{n \mathbf{k}}(\mathbf{r}) =
+\frac{1}{\sqrt{N}}\sum_{\mathbf{R}}\sum_{j\beta \in \mathrm{uc}}
+e^{i\mathbf{k}\cdot\mathbf{R}}
+c_{n,j\beta}(\mathbf{k})
+\phi_{j\beta}(\mathbf{r} - \mathbf{R} - \mathcal{R}_j),
+$$
+
+where $j$ indexes atoms in `POSCAR` order, $\beta$ indexes the AO functions on each atom, and `N_orb` is the total number of AO basis functions in the unit cell without spin duplication. For non-spinful systems, `N_spinor = 1`. For spinful systems, `N_spinor = 2`, and the spin components are stored on the separate spinor axis.
+
+When the coefficients come from `HamiltonianObj.diag(..., bands_only=False)`, the returned eigenvectors have shape `(N_orb, N_band, N_k)`. Before loading them into `AOWfnObj`, transpose them to `(N_k, N_band, N_orb)` for non-spinful systems:
+
+```python
+import numpy as np
+
+gamma = np.array([[0.0, 0.0, 0.0]])
+eigvals, eigvecs = ham.diag(gamma, bands_only=False)
+wfnao = eigvecs.transpose(2, 1, 0)
+
+wfn = AOWfnObj(data_dir, basis_dir, "openmx")
+wfn.load(
+    kpts=gamma,
+    wfnao=wfnao,
+    el=eigvals[:, 0],
+    spinful=False,
+    efermi=fermi_energy,
+)
+wfn.to_h5()
+```
+
+The real-space wavefunction grid can be computed from these AO coefficients and basis functions by `AOWfnObj.to_real_space()`. It is a derived quantity and is not stored in `wavefunction_ao.h5`.
+
+### 5. Real-Space Grid-Resolved Properties
 
 These HDF5 files store properties on a real-space grid:
 
@@ -218,7 +269,7 @@ def read_grid_data(filepath):
 charge_density = read_grid_data('charge_density.h5')
 ```
 
-### 5. Force Field Properties (force.h5)
+### 6. Force Field Properties (force.h5)
 
 The `force.h5` file contains atom-resolved force field information.
 
