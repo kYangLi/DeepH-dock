@@ -1,1 +1,1 @@
-{"atoms_quantity": 3, "orbits_quantity": 57, "orthogonal_basis": false, "spinful": false, "fermi_energy_eV": -4.1934752874697425, "elements_orbital_map": {"Mo": [0, 0, 0, 1, 1, 2, 2], "Te": [0, 0, 0, 1, 1, 2, 2]}}
+{"atoms_quantity": 3, "orbits_quantity": 57, "orthogonal_basis": false, "spinful": false, "fermi_energy_eV": -4.1934752874697425, "elements_orbital_map": {"Mo": [0, 0, 0, 1, 1, 2, 2], "Te": [0, 0, 0, 1, 1, 2, 2]}, "occupation": 46.0}

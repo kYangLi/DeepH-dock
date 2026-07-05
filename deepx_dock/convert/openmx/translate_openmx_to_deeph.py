@@ -434,6 +434,8 @@ class OpenMXReader:
         #-----------------------------------------------------------------------
         if abs(float(_ChemP) * HARTREE_TO_EV - self.fermi_energy) > 1e-6:
             print(f"[warn] The fermi_energy stored in *.scfout is different from *.out ({float(_ChemP) * HARTREE_TO_EV} != {self.fermi_energy}).")
+        if abs(float(_Valence_Electrons) - self.occupation) > 1e-6:
+            print(f"[warn] The occupation stored in *.scfout is different from *.out ({float(_Valence_Electrons)} != {self.occupation}).")
 
     def _read_out(self):
         #-----------------------------------------------------------------------
@@ -457,6 +459,10 @@ class OpenMXReader:
         self.fermi_energy = float(
             self.out_reader.find_last("Chemical potential (Hartree)", 3)
         ) * HARTREE_TO_EV
+        self.occupation = float(
+            self.out_reader.find_last("Number of States", 4)
+        )
+        self.occupation = round(self.occupation, 10)
         #-----------------------------------------------------------------------
         _idx = self.out_reader.find_idx("Fractional coordinates of the") + 4
         atom_elem = []
@@ -487,6 +493,7 @@ class OpenMXReader:
             "spinful": self.spinful,
             "fermi_energy_eV": self.fermi_energy,
             "elements_orbital_map": self.elem_orb_map,
+            "occupation": self.occupation,
         }
         with open(file_path, 'w') as fwj:
             json.dump(info_json, fwj)
