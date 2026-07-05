@@ -166,7 +166,7 @@ SIESTA_EIG_FILENAME = "siesta.EIG"
 SIESTA_DM_FILENAME = "siesta.DM"
 
 # - Parallel
-PARALLEL_BACKEND_DEFAULT = "thread"
+PARALLEL_BACKEND_DEFAULT = "joblib"
 PARALLEL_BACKEND_VALID = {"thread", "joblib"}
 
 # - Folder names
