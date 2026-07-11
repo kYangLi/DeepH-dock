@@ -220,6 +220,7 @@ class OpenMXReader:
         self._read_scfout_matrix()
         self._read_scfout_tail()
         # Dump data
+        self._sort_atoms()
         self._dump_info_json()
         self._dump_poscar()
         if export_S:
@@ -470,19 +471,24 @@ class OpenMXReader:
             atom_elem.append(
                 self.out_reader.lines[_idx+i_atom].strip().split()[1]
             )
-        _seen, _prev = set(), atom_elem[0]
-        for _curr in atom_elem[1:]:
-            if _curr == _prev:
-                continue
-            if _curr in _seen:
-                raise ValueError(
-                    f'The atomic elements is not continued: {atom_elem}'
-                )
-            _seen.add(_prev)
-            _prev = _curr
         self.atom_elem = atom_elem
-        self.atom_elem_dict = dict(collections.Counter(atom_elem))
+
+    def _sort_atoms(self):
+        atom_elem = self.atom_elem
+        _atom_elem_unique = np.array(list(set(atom_elem)))
+        _atom_elem_first_idx = [
+            atom_elem.index(_elem) for _elem in _atom_elem_unique
+        ]
+        _atom_elem_unique = _atom_elem_unique[np.argsort(_atom_elem_first_idx)]
+        _elem2idx = {_elem: i for i, _elem in enumerate(_atom_elem_unique)}
+        _atom_elem_idx = [_elem2idx[_elem] for _elem in atom_elem]
+        atom_sort_idx = np.argsort(_atom_elem_idx, kind='stable')
+        atom_inv_sort_idx = np.argsort(atom_sort_idx)
+        atom_elem_sorted = np.array(atom_elem)[atom_sort_idx]
         #-----------------------------------------------------------------------
+        self.atom_elem_dict = dict(collections.Counter(atom_elem_sorted))
+        self.cart_coords = self.cart_coords[atom_sort_idx, :]
+        self.matrix_info["atom_pairs"][:, 3:5] = atom_inv_sort_idx[self.matrix_info["atom_pairs"][:, 3:5]]
 
     def _dump_info_json(self):
         file_path = self.deeph_path / DEEPX_INFO_FILENAME
