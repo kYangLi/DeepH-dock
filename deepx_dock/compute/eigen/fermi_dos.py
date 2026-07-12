@@ -101,7 +101,7 @@ class FermiEnergyAndDOSGenerator:
             temperature = kwargs.get("temperature", 300.0)
             n_elect_thres = kwargs.get("n_elect_thres", 1e-6)
             fermi_thres = kwargs.get("fermi_thres", 1e-6)
-            max_iter = kwargs.get("max_iter", 10)
+            max_iter = kwargs.get("max_iter", 1000)
             print(f"  Temperature={temperature}K")
             #
             n_elect = (self.nktot * self.occupation) / (2.0 - self.spinful)
