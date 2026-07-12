@@ -10,9 +10,11 @@ from deepx_dock.compute.eigen.hamiltonian import HamiltonianObj
 from deepx_dock.misc import dump_json_file
 from deepx_dock.CONSTANT import FERMI_ENERGY_INFO_FILENAME
 from deepx_dock.CONSTANT import DEEPX_EIGVAL_FILENAME, DEEPX_DOS_FILENAME
+from deepx_dock.CONSTANT import KELVIN_TO_EV
 
 
 GAUSSIAN_NEGLECT_FACTOR = 9.0
+FERMI_NEGLECT_FACTOR = 50.0
 DELTA_ENERGY = 0.1
 
 
@@ -70,7 +72,7 @@ class FermiEnergyAndDOSGenerator:
         return significant_cate > 1
 
     def find_fermi_energy(
-        self, k_mesh=(-1,-1,-1), dk=0.02, n_jobs=-1, parallel_k=True, method="counting", force_recalc=False
+        self, k_mesh=(-1,-1,-1), dk=0.02, n_jobs=-1, parallel_k=True, method="counting", force_recalc=False, **kwargs
     ):
         self.kpoint_density = self._decide_k_mesh(k_mesh, dk)
         fermi_json = self.data_path / FERMI_ENERGY_INFO_FILENAME
@@ -91,10 +93,52 @@ class FermiEnergyAndDOSGenerator:
         print(f"Determining fermi energy with method={method} ...")
         if "counting" == method:
             eigvals_flattened = self.eigvals.flatten()
-            ifermi = int(self.nktot * self.occupation / (2 - self.spinful))
+            ifermi = round((self.nktot * self.occupation) / (2 - self.spinful))
             val_N = np.partition(eigvals_flattened, ifermi - 1)[ifermi - 1]
             val_Np1 = np.partition(eigvals_flattened, ifermi)[ifermi]
             self.fermi_energy = (val_N + val_Np1) / 2.0
+        elif "fermi" == method:
+            temperature = kwargs.get("temperature", 300.0)
+            n_elect_thres = kwargs.get("n_elect_thres", 1e-6)
+            fermi_thres = kwargs.get("fermi_thres", 1e-6)
+            max_iter = kwargs.get("max_iter", 10)
+            print(f"  Temperature={temperature}K")
+            #
+            n_elect = (self.nktot * self.occupation) / (2.0 - self.spinful)
+            temp_eV = temperature * KELVIN_TO_EV
+            eigvals_flattened = self.eigvals.flatten()
+            ifermi = round(n_elect)
+            val_N = np.partition(eigvals_flattened, ifermi - 1)[ifermi - 1]
+            val_Np1 = np.partition(eigvals_flattened, ifermi)[ifermi]
+            E_fermi_0 = (val_N + val_Np1) / 2.0
+            #
+            E_min = E_fermi_0 - FERMI_NEGLECT_FACTOR * temp_eV
+            E_max = E_fermi_0 + FERMI_NEGLECT_FACTOR * temp_eV
+            full_occ = np.sum(eigvals_flattened <= E_min)
+            eigvals_flattened = eigvals_flattened[np.logical_and(
+                eigvals_flattened > E_min, eigvals_flattened < E_max
+            )]
+            #
+            step = 1
+            for _ in range(max_iter):
+                E_mid = (E_min + E_max) / 2.0
+                delta_n_elect = np.sum(
+                    1.0 / (1.0 + np.exp((eigvals_flattened - E_mid) / temp_eV))
+                ) + full_occ - n_elect
+                if delta_n_elect < 0.0:
+                    E_min = E_mid
+                else:
+                    E_max = E_mid
+                if (abs(delta_n_elect) < n_elect_thres) and  (E_max - E_min < fermi_thres):
+                    break
+                step += 1
+            if step == max_iter + 1:
+                message = f"  Did NOT find Fermi energy after {max_iter} bisection steps.\n  E_min = {E_min} eV, E_max = {E_max} eV, dN_ele = {delta_n_elect}"
+                print(message)
+                raise ValueError(message)
+            else:
+                print(f"  Find Fermi energy after {step} bisection steps.\n  E_min = {E_min} eV, E_max = {E_max} eV, dN_ele = {delta_n_elect}")
+            self.fermi_energy = E_mid
         elif "tetrahedron" == method:
             eigvals_reshaped = self.eigvals.T.reshape(
                 *self.kpoint_density, self.band_quantity
