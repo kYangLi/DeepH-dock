@@ -141,7 +141,7 @@ def _read_ctrl_in(aims_dir_path: Path):
     return ctrl_params, spinful, aims_data_type.lower()
 
 
-def _map_positions_to_center_cell(site_positions: np.ndarray, lat: np.ndarray, eps: float = 1e-8):
+def _map_positions_to_center_cell(site_positions: np.ndarray, lat: np.ndarray, eps: float = 1e-8, tolerance: float = 5e-7):
         """
         Mimic FHI-aims map_to_center_cell behavior for periodic coordinates:
             frac <- frac - eps
@@ -153,6 +153,16 @@ def _map_positions_to_center_cell(site_positions: np.ndarray, lat: np.ndarray, e
         frac = frac - eps
         frac = frac - np.rint(frac)
         frac = frac + eps
+
+        # Check if any fractional coordinate is too close to ±0.5
+        mask = np.abs(np.abs(frac) - 0.5) < tolerance
+        if np.any(mask):
+            problematic = frac[mask]
+            raise ValueError(
+                "Mapped fractional coordinate(s) are too close to ±0.5 "
+                f"(tolerance={tolerance}): {problematic}"
+            )
+        
         return frac @ lat
 
 def _parse_struct(aims_dir_path: Path):
