@@ -49,6 +49,45 @@ class HamiltonianObj(AOMatrixObj):
         self.assert_compatible(overlap_obj)
         self.SR = overlap_obj.mats
 
+    @classmethod
+    def from_data(cls, structure_dict, info_dict, hamiltonian_data, overlap_data):
+        """
+        Construct a HamiltonianObj from in-memory DeepH-format data.
+
+        Bypasses file I/O. See ``AOMatrixObj.from_data`` for the format of
+        ``structure_dict``, ``info_dict`` and the matrix data dicts.
+
+        The input overlap_data must always be **spinless**, and it will be
+        expanded to ``[[S,0],[0,S]]`` when ``info_dict["spinful"]=True``.
+        When generating the info and overlap with
+        :func:`deepx_dock.compute.overlap.calc_overlap_in_memory`,
+        call it with ``spinful=False`` and modify ``info_dict["spinful"]``
+        manually.
+
+        Parameters
+        ----------
+        structure_dict : dict
+            See ``AOMatrixObj.from_data``.
+        info_dict : dict
+            See ``AOMatrixObj.from_data``.
+        hamiltonian_data : dict
+            DeepH-format Hamiltonian arrays (atom_pairs, chunk_shapes,
+            chunk_boundaries, entries).
+        overlap_data : dict
+            DeepH-format overlap arrays (atom_pairs, chunk_shapes,
+            chunk_boundaries, entries). ``atom_pairs`` must match
+            ``hamiltonian_data["atom_pairs"]``.
+
+        Returns
+        -------
+        HamiltonianObj
+        """
+        obj = super().from_data(structure_dict, info_dict, hamiltonian_data, matrix_type="hamiltonian")
+        overlap_obj = AOMatrixObj.from_data(structure_dict, info_dict, overlap_data, matrix_type="overlap")
+        obj.assert_compatible(overlap_obj)
+        obj.SR = overlap_obj.mats
+        return obj
+
     @property
     def HR(self):
         """Hamiltonian matrix in real space."""

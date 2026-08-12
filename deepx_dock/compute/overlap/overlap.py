@@ -124,3 +124,123 @@ def save_overlap_from_files(
     save_structure_deeph(overlaps.structure, str(output_dir), spinful=spinful)
     save_mat_deeph(str(output_dir), overlaps, "o")
     return overlaps
+
+
+def calc_overlap_in_memory(
+    structure_dict: dict,
+    basis_path: str | Path,
+    aocode: str,
+    *,
+    spinful: bool = False,
+    ecut: Optional[float] = None,
+    kdense: Optional[float] = None,
+):
+    """
+    Calculate the overlap matrix from an in-memory atomic structure.
+
+    Returns info and overlap in DeepH-format.
+
+    Parameters
+    ----------
+    structure_dict : dict
+        Must contain ``lattice`` (3, 3), ``atomic_numbers`` (Natom,) and
+        ``frac_coords`` (Natom, 3).
+    basis_path : str or Path
+        Directory containing the basis files (OpenMX PAO files +
+        ``basis_info.json``, or one SIESTA ``.ion`` file per element).
+    aocode : str
+        Basis code: "siesta" or "openmx".
+    spinful : bool, optional
+        If True, return the expanded overlap matrix as [[S, 0], [0, S]].
+        Default: False.
+    ecut : float, optional
+        Energy cutoff of Fourier transforms. Default: interface-specific (1800
+        for OpenMX, 100 for SIESTA).
+    kdense : float, optional
+        K point density of Fourier transforms. Default: 15.0 for OpenMX, None
+        for SIESTA.
+
+    Returns
+    -------
+    info_dict : dict
+        DeepH info metadata (spinful, elements_orbital_map, ...).
+    overlap_data : dict
+        DeepH-format overlap (atom_pairs, chunk_boundaries, chunk_shapes,
+        entries).
+    """
+    import numpy as np
+    from HPRO.utils.structure import Structure
+    from HPRO.io.aodata import AOData
+    from deepx_dock.CONSTANT import BOHR_TO_ANGSTROM
+
+    aocode = normalize_aocode(aocode)
+    if ecut is None:
+        ecut = default_ecut(aocode)
+    if kdense is None:
+        kdense = default_kdense(aocode)
+
+    structure = Structure(
+        np.array(structure_dict["lattice"]) / BOHR_TO_ANGSTROM,
+        np.array(structure_dict["atomic_numbers"]),
+        np.array(structure_dict["frac_coords"]),
+        atomic_positions_is_cart=False,
+        efermi=None,
+    )
+    aodata = AOData(structure, basis_path_root=str(basis_path), aocode=aocode)
+    overlaps = calc_overlap(aodata, Ecut=ecut, kdense=kdense)
+
+    if spinful:
+        overlaps.spinless_to_spinful()
+
+    return matao2deepx(overlaps)
+
+
+def matao2deepx(matao):
+    """
+    Convert an HPRO MatAO object to DeepH-format dicts.
+    The order of atoms are not sorted so that the atoms of the same species may
+    not be continuous.
+
+    Parameters
+    ----------
+    matao : HPRO MatAO object.
+
+    Returns
+    -------
+    info_dict : dict
+        DeepH info metadata.
+    obs_dict : dict
+        DeepH-format observables (atom_pairs, chunk_boundaries, chunk_shapes,
+        entries).
+    """
+    import numpy as np
+    from HPRO.constants import hartree2ev
+    from deepx_dock.CONSTANT import PERIODIC_TABLE_INDEX_TO_SYMBOL
+
+    stru = matao.structure
+    aodata = matao.aodata1
+
+    # save info dict
+    info_dict = {}
+    info_dict["atoms_quantity"] = stru.natom
+    info_dict["orbits_quantity"] = sum(aodata.norbfull_spc[spc] for spc in stru.atomic_numbers)
+    info_dict["orthogonal_basis"] = False
+    info_dict["spinful"] = matao.spinful
+    info_dict["fermi_energy_eV"] = stru.efermi * hartree2ev if stru.efermi is not None else None
+    info_dict["elements_orbital_map"] = {
+        PERIODIC_TABLE_INDEX_TO_SYMBOL[number]: ls for number, ls in aodata.ls_spc.items()
+    }
+
+    atom_pairs = np.concatenate((matao.translations, matao.atom_pairs), axis=1, dtype="i8")
+    shapes = np.array([mat.shape for mat in matao.mats])
+    sizes = np.array([mat.size for mat in matao.mats])
+    displ = np.concatenate([[0], np.cumsum(sizes)])
+    flatmat = np.concatenate([mat.reshape(-1) for mat in matao.mats])
+
+    obs_dict = {
+        "atom_pairs": atom_pairs,
+        "chunk_boundaries": displ,
+        "chunk_shapes": shapes,
+        "entries": flatmat,
+    }
+    return info_dict, obs_dict
