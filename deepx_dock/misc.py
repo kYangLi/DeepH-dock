@@ -73,18 +73,21 @@ def load_poscar_file(file_path):
         cart_coords = _coords @ lat
 
     atomic_numbers = []
+    atomic_symbols = []
     for symbol, count in zip(elem_symbols_unique, elem_counts):
         if symbol not in PERIODIC_TABLE_SYMBOL_TO_INDEX:
             raise KeyError(f"unknown element symbol: {symbol}")
 
         z = PERIODIC_TABLE_SYMBOL_TO_INDEX[symbol]
         atomic_numbers.extend([z] * count)
+        atomic_symbols.extend([symbol] * count)
     atomic_numbers = np.array(atomic_numbers, dtype=int)
 
     return {
         "lattice": lat,
         "elements_unique": elem_symbols_unique,
         "elements_counts": elem_counts,
+        "atomic_symbols": atomic_symbols,
         "atomic_numbers": atomic_numbers,
         "cart_coords": cart_coords,
         "frac_coords": frac_coords,

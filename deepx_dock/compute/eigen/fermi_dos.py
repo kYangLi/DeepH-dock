@@ -49,7 +49,6 @@ class FermiEnergyAndDOSGenerator:
         self.reciprocal_lattice = self.obj_H.reciprocal_lattice
         self.band_quantity = self.obj_H.orbits_quantity * (1 + self.obj_H.spinful)
         self.occupation = self.obj_H.occupation
-        self.occupation = self.obj_H.occupation
         self.spinful = self.obj_H.spinful
 
     @property
@@ -81,8 +80,11 @@ class FermiEnergyAndDOSGenerator:
                 self.fermi_energy = json.load(f).get("fermi_energy_eV", None)
                 print(f"Use cached fermi energy from {FERMI_ENERGY_INFO_FILENAME}")
         elif self.occupation is None:
-            print("Fermi energy can't be determined because occupation is None, use the original one in info.json")
-            self.fermi_energy = self.obj_H.fermi_energy
+            if self.obj_H.fermi_energy is not None:
+                print("Fermi energy can't be determined because occupation is None, use the original one in info.json")
+                self.fermi_energy = self.obj_H.fermi_energy
+            else:
+                raise ValueError("Can't determine fermi energy because both occupation and original fermi energy are None")
         if self.fermi_energy is not None:
             return
         if self.band_quantity * (2.0 - self.spinful) < self.occupation:
@@ -129,7 +131,7 @@ class FermiEnergyAndDOSGenerator:
                     E_min = E_mid
                 else:
                     E_max = E_mid
-                if (abs(delta_n_elect) < n_elect_thres) and  (E_max - E_min < fermi_thres):
+                if (abs(delta_n_elect) < n_elect_thres) and (E_max - E_min < fermi_thres):
                     break
                 step += 1
             if step == max_iter + 1:
@@ -197,7 +199,7 @@ class FermiEnergyAndDOSGenerator:
             raise ValueError(f"Unknown method: {method}")
 
     def plot_dos_data(self, plot_format="png", dpi=300):
-        print("Ploting DOS ...")
+        print("Plotting DOS ...")
         self._setup_plot_style()
         fig, ax = plt.subplots()
         ax.plot(self.egrid, self.dos, color="black")
