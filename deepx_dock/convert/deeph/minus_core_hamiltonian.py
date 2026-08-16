@@ -1,7 +1,6 @@
 import numpy as np
 import scipy
 from itertools import accumulate
-from typing import List, Dict
 
 from pathlib import Path
 import json
@@ -43,46 +42,6 @@ def copy_files(input_dir, output_dir):
             shutil.copyfile(output_dir/filename, input_dir/filename)
 
 
-def merge_dict(d1, d2, tag=""):
-    if len(d2) == 0:
-        return d1
-    for k, v in d2.items():
-        tag_now = tag+"["+str(k)+"]"
-        if not k in d1.keys():
-            d1[k] = v
-        elif not isinstance(v, dict):
-            if v != d1[k]:
-                raise ValueError(f"{tag_now} is not consistent with others!")
-        else:
-            d1[k] = merge_dict(d1[k], v, tag_now)
-    return d1
-
-
-def get_dataset_info(input_dir, output_dir, data_dir_lister: List[str]):
-    input_dir = Path(input_dir)
-    output_dir = Path(output_dir)
-    elements_orbital_map = {}
-    spinful = None
-    for dir_name in data_dir_lister:
-        if (input_dir / dir_name / DEEPX_INFO_FILENAME).is_file():
-            info_file = input_dir / dir_name / DEEPX_INFO_FILENAME
-        elif (output_dir / dir_name / DEEPX_INFO_FILENAME).is_file():
-            info_file = output_dir / dir_name / DEEPX_INFO_FILENAME
-        else:
-            raise FileNotFoundError(f"{str(dir_name)}: No {DEEPX_INFO_FILENAME} file found in input or output directory!")
-        with open(info_file, 'r') as f0:
-            json_data = json.load(f0)
-            elements_orbital_map = merge_dict(
-                elements_orbital_map, json_data["elements_orbital_map"], 
-                str(dir_name)+" [elements_orbital_map]"
-            )
-            if spinful is None:
-                spinful = json_data["spinful"]
-            elif spinful != json_data["spinful"]:
-                raise ValueError(f"{str(dir_name)} [spinful] is not consistent with others!")
-    return elements_orbital_map, spinful
-
-
 class SingleAtomHamiltonianHandler:
     def __init__(
         self, full_dir, corrected_dir, single_atoms_dir,
@@ -99,77 +58,63 @@ class SingleAtomHamiltonianHandler:
         self.backward = backward
         self.n_jobs = n_jobs
         self.n_tier = n_tier
-    
+
     def transfer_all(self):
-        data_dir_lister = get_data_dir_lister(
-            self.input_dir, self.n_tier, validation_check_H
-        )
-        elements_orbital_map, spinful = get_dataset_info(
-            self.input_dir, self.output_dir, data_dir_lister
-        )
-        elements_quantity = self.get_elements_quantity(
-            self.single_atoms_dir, elements_orbital_map
-        )
-        #
+        elements_quantities = self.get_elements_quantities(self.single_atoms_dir)
         data_dir_lister = get_data_dir_lister(
             self.input_dir, self.n_tier, validation_check_H
         )
         worker = partial(
             self.transfer_one,
-            input_dir=self.input_dir, 
-            output_dir=self.output_dir, 
-            elements_quantities=elements_quantity,
-            spinful=spinful,
-            transform_offsite_blocks=self.transform_offsite_blocks, 
-            copy_other_files=self.copy_other_files, 
+            input_dir=self.input_dir,
+            output_dir=self.output_dir,
+            elements_quantities=elements_quantities,
+            transform_offsite_blocks=self.transform_offsite_blocks,
+            copy_other_files=self.copy_other_files,
             backward=self.backward,
         )
         parallel_map(worker, data_dir_lister, n_jobs=self.n_jobs, desc="Data")
 
     @staticmethod
-    def get_elements_quantity(
-        single_atoms_dir: str | Path, elements_orbital_map: Dict[str, List[int]]
-    ):
+    def get_elements_quantities(single_atoms_dir: str | Path):
         single_atoms_dir = Path(single_atoms_dir)
-        quantities = {
-            ele: {} for ele in elements_orbital_map.keys()
-        }
-        for ele in elements_orbital_map.keys():
-            if not (single_atoms_dir / ele).exists():
-                raise FileNotFoundError(f"{single_atoms_dir/ele} not found!")
-            #
-            with open(single_atoms_dir/ele/DEEPX_INFO_FILENAME, 'r') as f0:
+        assert single_atoms_dir.is_dir(), f"{single_atoms_dir} is not a directory"
+        element_dirs = [d for d in single_atoms_dir.iterdir() if d.is_dir()]
+        assert len(element_dirs) > 0, f"No element subdirectories found in {single_atoms_dir} !"
+        quantities = {}
+        for element_dir in element_dirs:
+            ele = element_dir.name
+            with open(element_dir/DEEPX_INFO_FILENAME, 'r') as f0:
                 json_data = json.load(f0)
                 single_atom_orbital_map = json_data["elements_orbital_map"]
                 core_orbital_index = json_data.get("elements_core_orbital_index", {e: [] for e in single_atom_orbital_map.keys()})
-            assert list(single_atom_orbital_map.keys()) == [ele,], f"The element in {single_atoms_dir/ele} is {single_atom_orbital_map.keys()} !"
-            assert single_atom_orbital_map[ele] == elements_orbital_map[ele], f"The orbitals in {single_atoms_dir/ele} is {single_atom_orbital_map[ele]}, which is not consistent with the orbitals in dataset {elements_orbital_map[ele]} !"
-            #
+            assert list(single_atom_orbital_map.keys()) == [ele,], f"The element in {element_dir} is {single_atom_orbital_map.keys()} !"
+            quantities[ele] = {}
+            quantities[ele]["orbital_map"] = single_atom_orbital_map[ele]
             split_index = [0,] + list(
                 accumulate([2*ll+1 for ll in single_atom_orbital_map[ele]])
             )
-            changed_index = core_orbital_index[ele]
+            core_index_list = core_orbital_index[ele]
             changed_range = np.concatenate([
-                np.arange(split_index[changed_index], split_index[changed_index+1])
-                for changed_index in changed_index
-            ], axis=0) if len(changed_index) > 0 else []
+                np.arange(split_index[idx], split_index[idx+1])
+                for idx in core_index_list
+            ], axis=0) if len(core_index_list) > 0 else []
             quantities[ele]["orbital_changed_range"] = changed_range
-            #
-            with h5py.File(single_atoms_dir/ele/DEEPX_HAMILTONIAN_FILENAME, 'r') as f1:
+            with h5py.File(element_dir/DEEPX_HAMILTONIAN_FILENAME, 'r') as f1:
                 shape = f1['chunk_shapes'][:][0]
                 hamiltonian_single_atom = np.array(f1['entries'][:], dtype=np.float64).reshape(shape)
             quantities[ele]["hamiltonian"] = hamiltonian_single_atom
-            with h5py.File(single_atoms_dir/ele/DEEPX_OVERLAP_FILENAME, 'r') as f2:
+            with h5py.File(element_dir/DEEPX_OVERLAP_FILENAME, 'r') as f2:
                 shape = f2['chunk_shapes'][:][0]
                 overlap_single_atom = np.array(f2['entries'][:], dtype=np.float64).reshape(shape)
             quantities[ele]["overlap"] = overlap_single_atom
             quantities[ele]["overlapinv"] = scipy.linalg.inv(overlap_single_atom)
         return quantities
-    
+
     @staticmethod
     def transfer_one(
-        dir_name, input_dir, output_dir, elements_quantities, spinful,
-        transform_offsite_blocks, copy_other_files, backward, 
+        dir_name, input_dir, output_dir, elements_quantities,
+        transform_offsite_blocks, copy_other_files, backward,
     ):
         try:
             input_dir = Path(input_dir)
@@ -183,16 +128,18 @@ class SingleAtomHamiltonianHandler:
                 copy_files(input_dir_path, output_dir_path)
             #
             SingleAtomHamiltonianHandler.transfer(
-                input_dir_path, output_dir_path, elements_quantities, spinful,
-                transform_offsite_blocks, backward, 
+                input_dir_path, output_dir_path, elements_quantities,
+                transform_offsite_blocks, backward,
             )
         except Exception as e:
-            print(f"Error in {dir_name}: {e}")
+            print(f"\nError in {dir_name}: {e}")
+            import traceback
+            traceback.print_exc()
 
     @staticmethod
     def transfer(
-        input_dir, output_dir, ele_quantities, spinful,
-        transform_offsite_blocks, backward, 
+        input_dir, output_dir, ele_quantities,
+        transform_offsite_blocks, backward,
     ):
         input_dir = Path(input_dir)
         output_dir = Path(output_dir)
@@ -207,6 +154,24 @@ class SingleAtomHamiltonianHandler:
             species = lines[5].split()
             atom_nums = [int(i) for i in lines[6].split()]
         species_list = [species[i] for i in range(len(atom_nums)) for _ in range(atom_nums[i])]
+        #
+        if (input_dir / DEEPX_INFO_FILENAME).is_file():
+            info_file = input_dir / DEEPX_INFO_FILENAME
+        elif (output_dir / DEEPX_INFO_FILENAME).is_file():
+            info_file = output_dir / DEEPX_INFO_FILENAME
+        else:
+            raise FileNotFoundError(f"No {DEEPX_INFO_FILENAME} file found in input or output directory!")
+        with open(info_file, "r") as f:
+            json_data = json.load(f)
+            elements_orbital_map = json_data["elements_orbital_map"]
+            spinful = json_data["spinful"]
+        for ele in elements_orbital_map.keys():
+            if ele not in ele_quantities:
+                raise KeyError(
+                    f"Element {ele} in {info_file} not found in the single atoms directory!"
+                )
+            assert ele_quantities[ele]["orbital_map"] == elements_orbital_map[ele], \
+                f"The orbitals of element {ele} is {elements_orbital_map[ele]}, which is not consistent with the single atom orbitals {ele_quantities[ele]['orbital_map']} !"
         #
         with h5py.File(input_dir/DEEPX_HAMILTONIAN_FILENAME, 'r') as f:
             atom_pairs = np.array(f['atom_pairs'][:], dtype=int)
