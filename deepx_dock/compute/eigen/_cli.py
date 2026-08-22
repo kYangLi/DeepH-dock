@@ -157,12 +157,13 @@ def plot_band_data(data_path, energy_window):
         ),
         click.option(
             "--method",
-            type=click.Choice(["counting", "tetrahedron"]),
+            type=click.Choice(["counting", "fermi", "tetrahedron"]),
             default="counting",
             help="Calculating method that is used for obtaining DOS.",
         ),
         click.option("--kp-mesh", type=(int, int, int), default=(-1, -1, -1), help="The mesh of the k points (-1 means switching to kp-density mode)."),
         click.option("--kp-density", "-d", type=float, default=0.1, help="The density of the k points."),
+        click.option("--temperature", type=float, default=300.0, help="The electronic temperature in Kelvin."),
         click.option(
             "--cache-res",
             is_flag=True,
@@ -198,6 +199,7 @@ def find_fermi_energy(
     method,
     kp_mesh,
     kp_density,
+    temperature,
     cache_res,
     ill_method,
     ill_threshold,
@@ -229,7 +231,7 @@ def find_fermi_energy(
 
     parallel_k = not blas_parallel_mode
     fd_fermi = FermiEnergyAndDOSGenerator(data_path, obj_H, ill_handler=ill_handler)
-    fd_fermi.find_fermi_energy(k_mesh=kp_mesh, dk=kp_density, n_jobs=jobs_num, parallel_k=parallel_k, method=method)
+    fd_fermi.find_fermi_energy(k_mesh=kp_mesh, dk=kp_density, temperature=temperature, n_jobs=jobs_num, parallel_k=parallel_k, method=method)
     fd_fermi.dump_fermi_energy()
     if cache_res and fd_fermi.eigvals is not None:
         fd_fermi.dump_eigval_data()

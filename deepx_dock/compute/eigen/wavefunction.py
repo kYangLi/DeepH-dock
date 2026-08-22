@@ -2,6 +2,7 @@ from pathlib import Path
 import h5py
 import os
 import threadpoolctl
+import warnings
 
 import numpy as np
 from scipy.spatial import KDTree
@@ -17,6 +18,7 @@ from deepx_dock.misc import load_json_file, load_poscar_file
 from deepx_dock.CONSTANT import BOHR_TO_ANGSTROM
 from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME
 from deepx_dock.CONSTANT import DEEPX_INFO_FILENAME
+from deepx_dock.CONSTANT import DEEPX_WFNAO_FILENAME, DEEPX_WFNR_FILENAME
 
 GRIDINTG_NSUBDIV_RANGE = (13, 20)
 
@@ -31,11 +33,11 @@ class AOWfnObj:
     basis_dir_path : str | Path
         Directory path to the basis file.
     aocode : str
-        Atomic orbital code. Currently only supports "siesta".
+        Atomic orbital code. Currently only supports "siesta" and "openmx".
     kpts : np.ndarray
         k-points in reduced coordinates (fractional), shape (Nk, 3).
     wfnao : np.ndarray
-        Atomic orbital wave function coefficients, shape (Nk, Nband, Norb).
+        Atomic orbital wave function coefficients, shape (Nk, Nband, Norb*Nspin).
     el : np.ndarray
         Eigenvalues (energy levels), shape (Nband,).
     spinful : bool, optional
@@ -56,23 +58,29 @@ class AOWfnObj:
         self.wfnao = wfnao
         self.el = el
         self.spinful = spinful
+        self.nspinor = 2 if spinful else 1
         self.efermi = efermi
         self.kgrid = kgrid
         if kgrid is not None:
             assert kpts.shape[0] == np.prod(kgrid)
+            
+        self._transform_wavefunction()
+
 
     def parse_data(self):
         self._parse_poscar()
         self._parse_basis()
 
-    def to_h5(self, h5_path):
-        assert self.kgrid is not None
+    def to_h5(self, h5_path=None):
+        if h5_path is None:
+            h5_path = self.info_dir_path / DEEPX_WFNAO_FILENAME
         with h5py.File(h5_path, 'w') as f:
-            f.create_dataset('kpts', data=self.kpts)
-            f.create_dataset('kgrid', data=self.kgrid)
-            f.create_dataset('wfnao', data=self.wfnao)
-            f.create_dataset('el', data=self.el)
             f.create_dataset('efermi', data=self.efermi)
+            f.create_dataset('kpts', data=self.kpts)
+            if self.kgrid is not None:
+                f.create_dataset('kgrid', data=self.kgrid)
+            f.create_dataset('eigenvalues', data=self.el)
+            f.create_dataset('eigenvectors', data=self.wfnao)
 
     def _get_necessary_data_path(self,
         info_dir_path: str | Path, basis_dir_path: str | Path
@@ -96,6 +104,39 @@ class AOWfnObj:
     def _parse_basis(self):
         structure = Structure(rprim=self.lattice / BOHR_TO_ANGSTROM, atomic_numbers=self.atomic_numbers, atomic_positions=self.frac_coords)
         self.basis_data = AOData(structure, basis_path_root=self.basis_dir_path, aocode=self.aocode)
+        
+    def _transform_wavefunction(self):
+        """
+        Transform the wavefunction to a more convenient format: 
+        (Nk, Nband, Norb*Nspin) -> (Nk, Nband, Nspin, Norb)
+        """
+        aodata = self.basis_data
+        structure = aodata.structure 
+
+        nk_all = self.wfnao.shape[0]
+        nb_all = self.wfnao.shape[1]
+        
+        # Extract and transpose atomic orbital (AO) coefficients to prioritize the orbital dimension.
+        num_orbitals_tot = self.wfnao.shape[-1] // self.nspinor
+        c_vec = np.zeros((nk_all, nb_all, self.nspinor, num_orbitals_tot), dtype=self.wfnao.dtype)
+
+        site_norbits = np.zeros(structure.natom, dtype=int)
+        for iatm in range(structure.natom):
+            atm_nbr = structure.atomic_numbers[iatm]
+            site_norbits[iatm] = aodata.norbfull_spc[atm_nbr]
+            
+        if self.nspinor == 2:
+            current_orbitals_idx = 0
+            current_idx = 0
+            for n_i in site_norbits:
+                c_vec[:,:,0, current_orbitals_idx : current_orbitals_idx + n_i] = self.wfnao[:,:,current_idx : current_idx + n_i]
+                c_vec[:,:,1, current_orbitals_idx : current_orbitals_idx + n_i] = self.wfnao[:,:,current_idx + n_i : current_idx + 2 * n_i]
+                current_orbitals_idx += n_i
+                current_idx += 2 * n_i
+        elif self.nspinor == 1:
+            c_vec = self.wfnao.reshape((nk_all, nb_all, self.nspinor, -1), order='C')  # (nk, nb, nspinor, norb)
+        
+        self.wfnao = c_vec
 
     @staticmethod
     def _read_poscar(filename):
@@ -108,6 +149,7 @@ class AOWfnObj:
         return {
             "lattice": result["lattice"],
             "elements": elements,
+            "atomic_numbers": result["atomic_numbers"],
             "cart_coords": result["cart_coords"],
             "frac_coords": result["frac_coords"],
         }
@@ -238,7 +280,9 @@ class AOWfnObj:
         self.fosc_ongrid = np.concatenate(fosc_ongrid, axis=1).T # (M, ncoords)
         self.igdptr = np.array(igdptr) # (ngd_co+1,)
 
-    def to_real_space(self, ik=None, ib=None, gridsize=None, return_periodic=True):
+    def to_real_space(self, 
+            ik=None, ib=None, gridsize=None, return_periodic=True
+        ):
         """
         Compute the periodic part of Bloch wavefunction u_{nk}(r) = e^{-ikr} * psi_{nk}(r).
         
@@ -256,8 +300,7 @@ class AOWfnObj:
             self._init_grid(gridsize)
         assert self.gridsizefi is not None
 
-        aodata = self.basis_data
-        structure = aodata.structure 
+        structure = self.basis_data.structure 
 
         nk_all = self.wfnao.shape[0]
         nb_all = self.wfnao.shape[1]
@@ -276,41 +319,16 @@ class AOWfnObj:
         nk = len(ik)
         nb = len(ib)
             
-        # Fractional coordinates of the selected k-points.
-        # Shape: (nk, 3)
-        kpts = self.kpts[ik] 
+        kpts = self.kpts[ik] # (nk, 3)
         
-        # Extract and transpose atomic orbital (AO) coefficients to prioritize the orbital dimension.
-        # Transposed c_vec shape: (norb, nk, nb, nspinor)
-        nspinor = 2 if self.spinful else 1
-        num_orbitals_tot = self.wfnao.shape[-1] // nspinor
-        wfnao = self.wfnao[np.array(ik)[:, np.newaxis], np.array(ib), :]
-        c_vec = np.zeros((nk, nb, nspinor, num_orbitals_tot), dtype=self.wfnao.dtype)
-
-        site_norbits = np.zeros(structure.natom, dtype=int)
-        for iatm in range(structure.natom):
-            atm_nbr = structure.atomic_numbers[iatm]
-            site_norbits[iatm] = aodata.norbfull_spc[atm_nbr]
-            
-        if nspinor == 2:
-            current_orbitals_idx = 0
-            current_idx = 0
-            for n_i in site_norbits:
-                c_vec[:,:,0, current_orbitals_idx : current_orbitals_idx + n_i] = wfnao[:,:,current_idx : current_idx + n_i]
-                c_vec[:,:,1, current_orbitals_idx : current_orbitals_idx + n_i] = wfnao[:,:,current_idx + n_i : current_idx + 2 * n_i]
-                current_orbitals_idx += n_i
-                current_idx += 2 * n_i
-        elif nspinor == 1:
-            c_vec = wfnao.reshape((nk, nb, nspinor, -1), order='C')  # (nk, nb, nspinor, norb)
-
-        c_vec = c_vec.transpose(3, 0, 1, 2)
+        c_vec = self.wfnao[np.array(ik)[:, np.newaxis], np.array(ib), ...]
+        c_vec = c_vec.transpose(3, 0, 1, 2) # (norb, nk, nb, nspinor)
         
         # Initialize the global real-space wavefunction tensor.
-        # Shape: (N_x, N_y, N_z, nk, nb, nspinor)
         psi_global = np.zeros(
-            (self.gridsizefi[0], self.gridsizefi[1], self.gridsizefi[2], nk, nb, nspinor),
+            (self.gridsizefi[0], self.gridsizefi[1], self.gridsizefi[2], nk, nb, self.nspinor),
             dtype=np.complex128
-        )
+        ) # (N_x, N_y, N_z, nk, nb, nspinor)
         
         # ncoords defines the total number of fine grid points contained within a standard coarse grid.
         # Constraint: ncoords = nsubdiv^3
@@ -325,7 +343,7 @@ class AOWfnObj:
             rem = igd_co % (self.gridsizeco[1] * self.gridsizeco[2])
             ib_co = rem // self.gridsizeco[2]
             ic_co = rem % self.gridsizeco[2]
-            
+
             # Calculate the global fine grid coordinate boundaries for the current coarse grid block.
             # The min() function dynamically handles non-divisible edge truncations.
             a_start = ia_co * self.nsubdiv
@@ -334,79 +352,106 @@ class AOWfnObj:
             b_end = min(b_start + self.nsubdiv, self.gridsizefi[1])
             c_start = ic_co * self.nsubdiv
             c_end = min(c_start + self.nsubdiv, self.gridsizefi[2])
-            
+
             # Compute the valid structural lengths along each axis, discarding the out-of-bounds region.
             la = a_end - a_start
             lb = b_end - b_start
             lc = c_end - c_start
-            
+
             # Retrieve pointers for the pre-calculated orbital subsets mapped to this specific grid block.
             start_idx = self.igdptr[igd_co]
-            end_idx = self.igdptr[igd_co+1]
-            if start_idx == end_idx: 
+            end_idx = self.igdptr[igd_co + 1]
+            if start_idx == end_idx:
                 # Skip iteration if no atomic orbitals take nonzero values in this domain.
                 continue
 
             # iouc_thisgd: Indices of orbitals present in the current block. Shape: (M_thisgd,)
             iouc_thisgd = self.iouc_ongrid[start_idx:end_idx]
-            # fosc_thisgd: Pre-calculated real-space AO values $f_{m,r}$. Shape: (M_thisgd, ncoords)
+            # fosc_thisgd: Pre-calculated real-space AO values. Shape: (M_thisgd, ncoords)
             fosc_thisgd = self.fosc_ongrid[start_idx:end_idx, :]
-            # trans_thisgd: Supercell translation vectors $\mathbf{T}_m$, in fractional coordinates. Shape: (M_thisgd, 3)
+            # trans_thisgd: Supercell translation vectors, in fractional coordinates. Shape: (M_thisgd, 3)
             trans_thisgd = self.translations_ongrid[start_idx:end_idx, :]
+            iatuc_thisgd = self.orbinfo1.iat_orbs[iouc_thisgd]
 
-            # Compute the Bloch phase factor: $e^{i 2\pi \mathbf{T}_m \cdot \mathbf{k}}$.
-            # Broadcasting matrix multiplication between translations (M_thisgd, 3) and kpts.T (3, nk).
+            # Compute the Bloch phase factor.
             # Shape: (M_thisgd, nk)
-            phase_thisgd = np.exp(1j * 2 * np.pi * trans_thisgd @ kpts.T) 
-            
-            # Select the sub-matrix of coefficients $c_{m,k,b,s}$ corresponding to the active orbitals.
+            phase_thisgd = np.exp(1j * 2 * np.pi * (trans_thisgd) @ kpts.T)
+
+            # Select the sub-matrix of coefficients corresponding to the active orbitals.
+            # Advanced indexing creates a physical copy in memory.
             # Shape: (M_thisgd, nk, nb, nspinor)
-            c_thisgd = c_vec[iouc_thisgd] 
-            
-            # Apply the translation phase factor to the local coefficients via broadcasting.
-            # $\tilde{c} = c \cdot e^{i 2\pi \mathbf{T} \cdot \mathbf{k}}$
-            # New axes align the phase array with the full tensor dimensions.
-            # Shape: (M_thisgd, nk, nb, nspinor)
-            c_tilde = c_thisgd * phase_thisgd[:, :, np.newaxis, np.newaxis]
-            
+            c_tilde = c_vec[iouc_thisgd]
+
+            # Apply the translation phase factor IN-PLACE via broadcasting to avoid allocating a new array.
+            # Shape remains: (M_thisgd, nk, nb, nspinor)
+            c_tilde *= phase_thisgd[:, :, np.newaxis, np.newaxis]
+
+            # Explicitly delete the phase array to free memory immediately.
+            del phase_thisgd
+
             # Flatten all trailing physical dimensions to construct a 2D matrix for efficient computation.
             # Shape: (M_thisgd, nk * nb * nspinor)
-            c_tilde_flat = c_tilde.reshape(c_tilde.shape[0], -1) 
-            
+            c_tilde_flat = c_tilde.reshape(c_tilde.shape[0], -1)
+
             # Perform core tensor contraction via highly optimized BLAS matrix multiplication.
-            # $\Phi = F^T \tilde{C}$
             # Shape: (ncoords, nk * nb * nspinor)
-            psi_r_flat = fosc_thisgd.T @ c_tilde_flat 
-            
+            psi_r_flat = fosc_thisgd.T @ c_tilde_flat
+
+            # Delete intermediate coefficient arrays.
+            del c_tilde, c_tilde_flat
+
             # Unflatten the matrix product to restore the physical 3D structural dimensions.
             # Shape: (nsubdiv, nsubdiv, nsubdiv, nk, nb, nspinor)
-            psi_r_thisgd = psi_r_flat.reshape(self.nsubdiv, self.nsubdiv, self.nsubdiv, nk, nb, nspinor)
-            
+            psi_r_thisgd = psi_r_flat.reshape(
+                self.nsubdiv, self.nsubdiv, self.nsubdiv, nk, nb, self.nspinor
+            )
+
             # Map the valid inner domain of the local grid block back to the global spatial tensor.
             # Slicing [:la, :lb, :lc] exactly matches the dynamically truncated active lengths.
-            psi_global[a_start:a_end, b_start:b_end, c_start:c_end] = psi_r_thisgd[:la, :lb, :lc]
+            psi_global[a_start:a_end, b_start:b_end, c_start:c_end] = psi_r_thisgd[
+                :la, :lb, :lc
+            ]
+
+            # Clean up the large local wavefunction block explicitly.
+            del psi_r_flat, psi_r_thisgd
 
         if return_periodic:
-            # Generate 1D fractional coordinates for each axis
+            # Generate 1D fractional coordinates for each axis.
+            # Shape: (N_x,), (N_y,), (N_z,)
             grid_a = np.arange(self.gridsizefi[0]) / self.gridsizefi[0]
             grid_b = np.arange(self.gridsizefi[1]) / self.gridsizefi[1]
             grid_c = np.arange(self.gridsizefi[2]) / self.gridsizefi[2]
-            
-            # Construct a 3D grid of fractional coordinates. Shape: (N_x, N_y, N_z, 3)
-            r_frac = np.stack(np.meshgrid(grid_a, grid_b, grid_c, indexing='ij'), axis=-1)
-            
-            # Calculate the inverse Bloch phase: exp(-i 2\pi k \cdot r_frac)
-            # Use tensordot to perform dot product over the last axis (spatial dimension 3)
-            # Resulting phase_inv shape: (N_x, N_y, N_z, nk)
-            phase_inv = np.exp(-1j * 2 * np.pi * np.tensordot(r_frac, kpts, axes=([-1], [-1])))
-            
-            # Broadcast the phase factor across the band and spinor dimensions
-            psi_global *= phase_inv[:, :, :, :, np.newaxis, np.newaxis]
-        
-        # Normalize wavefunctions so that the norm is equal to sqrt(prod(self.gridsizefi))
+
+            # Compute independent phase components to avoid creating a massive Cartesian coordinate tensor.
+            # phase_a Shape: (N_x, 1, 1, nk)
+            phase_a = np.exp(-1j * 2 * np.pi * grid_a[:, None, None, None] * kpts[:, 0])
+            # phase_b Shape: (1, N_y, 1, nk)
+            phase_b = np.exp(-1j * 2 * np.pi * grid_b[None, :, None, None] * kpts[:, 1])
+            # phase_c Shape: (1, 1, N_z, nk)
+            phase_c = np.exp(-1j * 2 * np.pi * grid_c[None, None, :, None] * kpts[:, 2])
+
+            # Apply sequential in-place broadcasting directly into the global array.
+            psi_global *= phase_a[:, :, :, :, np.newaxis, np.newaxis]
+            psi_global *= phase_b[:, :, :, :, np.newaxis, np.newaxis]
+            psi_global *= phase_c[:, :, :, :, np.newaxis, np.newaxis]
+
+            # Free the 1D directional phase arrays.
+            del phase_a, phase_b, phase_c
+
+        # Normalize wavefunctions so that the norm is equal to sqrt(prod(self.gridsizefi)).
         psi_global *= np.sqrt(structure.cell_volume)
+
+        # Ensure deep memory contiguity during the final tensor permutation.
+        psi_global = np.ascontiguousarray(
+            psi_global[..., ::-1].transpose((3, 4, 5, 0, 1, 2))
+        )  # (nk, nb, nspinor, nx, ny, nz)
+        
+        # Norm check
+        norm_check = np.sum(np.abs(psi_global[0,0])**2)/(psi_global.shape[-3]*psi_global.shape[-2]*psi_global.shape[-1])
+        if np.abs(norm_check - 1.0) > 1e-3:
+            warnings.warn(f"Wavefunction norm is {norm_check}, expected close to 1.0")
             
-        return psi_global.transpose((3, 4, 5, 0, 1, 2)) # (nk, nb, nspinor, nx, ny, nz)
+        return psi_global # (nk, nb, nspinor, nx, ny, nz)
 
     def to_dm(self, representation='k'):
         pass

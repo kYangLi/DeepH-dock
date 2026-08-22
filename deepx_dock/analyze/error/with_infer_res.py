@@ -245,6 +245,15 @@ class BaseAnalyzer:
         return all_dft_dir
     
     def _analysis_one_structure(self, sid, target_name):
+        try:
+            return self._analysis_one_structure_core(sid, target_name)
+        except Exception as e:
+            print(f"\nError in analyzing structure {sid}: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def _analysis_one_structure_core(self, sid, target_name):
         raise NotImplementedError("Not implemented!")
     
     def _postprocess_results(self, *args):
@@ -304,7 +313,7 @@ class ErrorEachEntriesDistributionAnalyzer(BaseAnalyzer):
         print(f"[info] Entries mean absolute error: {self.aver_abs_err:.3e} eV")
         print(f"[info] Entries mean relative error: {self.aver_rel_err:.3e}")
     
-    def _analysis_one_structure(self, sid, target_name):
+    def _analysis_one_structure_core(self, sid, target_name):
         atom_pairs, boundaries, shapes, bm_entries, pred_entries, atoms_elem,\
             elem_orbs_map, spinful, overlap = _read_in_all_necessary_data(
                 sid, target_name, self.bm_dft_dir, self.pred_dft_dir
@@ -503,7 +512,7 @@ class ErrorOrbitalResoluteDistributionAnalyzer(BaseAnalyzer):
         self._parse_results(results)
         self._combine_parsed_results()
 
-    def _analysis_one_structure(self, sid, target_name):
+    def _analysis_one_structure_core(self, sid, target_name):
         # Get Errors
         atom_pairs, boundaries, shapes, bm_entries, pred_entries, atoms_elem,\
             elem_orbs_map, spinful, overlap = _read_in_all_necessary_data(
@@ -704,7 +713,7 @@ class ErrorElementsPairDistributionAnalyzer(BaseAnalyzer):
         self._parse_results(results)
         self._combine_parsed_results()
 
-    def _analysis_one_structure(self, sid, target_name):
+    def _analysis_one_structure_core(self, sid, target_name):
         # Get Errors
         atom_pairs, boundaries, shapes, bm_entries, pred_entries, atoms_elem,\
             elem_orbs_map, spinful, overlap = _read_in_all_necessary_data(
@@ -865,13 +874,6 @@ class ErrorElementsDistributionAnalyzer(BaseAnalyzer):
         self.elem_count = data["count"]
         self.average_error = np.mean(list(self.elem_error.values()))
         print(f"[info] Elements average error: {self.average_error:.3e} eV")
-        
-    def _analysis_one_structure(self, sid, target_name):
-        try:
-            return self._analysis_one_structure_core(sid, target_name)
-        except Exception as e:
-            print(f"Error in analyzing structure {sid}: {e}")
-            return None
     
     def _analysis_one_structure_core(self, sid, target_name):
         # Get Errors
@@ -1022,13 +1024,6 @@ class ErrorStructureDistributionAnalyzer(BaseAnalyzer):
         self.errors = np.array(data["errors"])
         self.average_error = np.mean(self.errors)
         print(f"[info] Structures average error: {self.average_error:.3e} eV")
-
-    def _analysis_one_structure(self, sid, target_name):
-        try:
-            return self._analysis_one_structure_core(sid, target_name)
-        except Exception as e:
-            print(f"Error in analyzing structure {sid}: {e}")
-            return None
 
     def _analysis_one_structure_core(self, sid, target_name):
         # Get Errors

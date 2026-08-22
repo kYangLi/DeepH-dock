@@ -1,192 +1,246 @@
-import numpy as np
+"""Overlap calculation through HPRO."""
 
-from deepx_dock.compute.overlap.findpairs import pairs_within_cutoff
-from HPRO.v2h.twocenter import TwoCenterIntgSplines
-from HPRO.utils.misc import slice_same
-from HPRO.from_gpaw.gaunt import gaunt
-from HPRO.matao.matao import MatAO
-import HPRO.config as CFG
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Optional
 
 
-def calc_overlap(aodata1, aodata2=None, Ecut=1800, kdense=15):
+OPENMX_DEFAULT_ECUT = 1800.0
+OPENMX_DEFAULT_KDENSE = 15.0
+SIESTA_DEFAULT_ECUT = 100.0
+
+
+def normalize_aocode(aocode: str) -> str:
+    """Normalize the basis-code spelling accepted by the overlap interface."""
+    normalized = aocode.strip().lower()
+    if normalized not in {"siesta", "openmx"}:
+        raise ValueError(f"Unsupported overlap basis code: {aocode}. Use 'siesta' or 'openmx'.")
+    return normalized
+
+
+def default_ecut(aocode: str) -> float:
+    """Return the default HPRO Fourier cutoff for a basis interface."""
+    if normalize_aocode(aocode) == "openmx":
+        return OPENMX_DEFAULT_ECUT
+    return SIESTA_DEFAULT_ECUT
+
+
+def default_kdense(aocode: str) -> Optional[float]:
+    """Return the default reciprocal radial-grid density for a basis interface."""
+    if normalize_aocode(aocode) == "openmx":
+        return OPENMX_DEFAULT_KDENSE
+    return None
+
+
+def load_aodata_from_files(poscar_path: str | Path, basis_path: str | Path, aocode: str):
     """
-    Calculate overlap matrix S_ij = <φ_i | φ_j>.
+    Load a POSCAR structure and AO basis files through HPRO.
 
-    Uses uniform linear r-space grid for accurate Bessel transform,
-    matching OpenMX's approach.
-
-    Parameters
-    ----------
-    aodata1 : AOData
-        AOData object containing basis set information.
-    aodata2 : AOData, optional
-        Second AOData for cross-structure overlap.
-        If None, calculate self-overlap.
-    Ecut : float
-        Energy cutoff for k-space grid (Hartree).
-        Controls kmax = sqrt(2*Ecut). Default: 1800 Ha.
-    kdense : float
-        k-space grid density. grid_nq = kmax * kdense.
-        Default: 15 (OpenMX default).
-
-    Returns
-    -------
-    MatAO
-        Overlap matrices organized by atom pairs.
-
-    Examples
-    --------
-    >>> overlap = calc_overlap(aodata)
-    >>> overlap = calc_overlap(aodata, Ecut=50, kdense=91.6)
+    For OpenMX, ``basis_path`` must contain the OpenMX 3.9 PAO files and
+    ``basis_info.json``. For SIESTA, it must contain one ``.ion`` file per
+    element in the POSCAR.
     """
-    return _calc_matrix_impl(aodata1, aodata2, Ecut, kdense, kind=1)
+    from HPRO.io.aodata import AOData
+    from HPRO.io.struio import from_poscar
+
+    poscar_path = Path(poscar_path)
+    basis_path = Path(basis_path)
+    aocode = normalize_aocode(aocode)
+
+    with poscar_path.open() as poscar_file:
+        structure = from_poscar(poscar_file)
+    return AOData(structure, basis_path_root=str(basis_path), aocode=aocode)
 
 
-def calc_kinetic(aodata1, aodata2=None, Ecut=1800, kdense=15):
+def calc_overlap(aodata1, aodata2=None, Ecut=OPENMX_DEFAULT_ECUT, kdense=OPENMX_DEFAULT_KDENSE):
     """
-    Calculate kinetic energy matrix K_ij = <φ_i | -½∇² | φ_j>.
+    Calculate an AO overlap matrix using HPRO.
 
-    Uses the same infrastructure as overlap calculation.
-
-    Parameters
-    ----------
-    aodata1 : AOData
-        AOData object containing basis set information.
-    aodata2 : AOData, optional
-        Second AOData for cross-structure kinetic matrix.
-        If None, calculate self-kinetic matrix.
-    Ecut : float
-        Energy cutoff for k-space grid (Hartree).
-        Default: 1800 Ha.
-    kdense : float
-        k-space grid density. Default: 15.
-
-    Returns
-    -------
-    MatAO
-        Kinetic matrices organized by atom pairs.
+    This wrapper preserves the previous DeepH-dock function name while
+    delegating the numerical implementation to HPRO.
     """
-    return _calc_matrix_impl(aodata1, aodata2, Ecut, kdense, kind=2)
+    from HPRO.v2h.twocenter import calc_overlap as hpro_calc_overlap
+
+    return hpro_calc_overlap(aodata1, aodata2=aodata2, Ecut=Ecut, kdense=kdense)
 
 
-def _calc_matrix_impl(aodata1, aodata2, Ecut, kdense, kind):
-    """Internal implementation for overlap/kinetic matrix calculation."""
-    original_kdense = CFG.AOFT_QGRID_DEN
-    if kdense is not None:
-        CFG.AOFT_QGRID_DEN = kdense
+def calc_overlap_from_files(
+    poscar_path: str | Path,
+    basis_path: str | Path,
+    aocode: str,
+    *,
+    spinful: bool = False,
+    ecut: Optional[float] = None,
+    kdense: Optional[float] = None,
+):
+    """Load files and return the HPRO ``MatAO`` overlap object."""
+    aocode = normalize_aocode(aocode)
+    if ecut is None:
+        ecut = default_ecut(aocode)
+    if kdense is None:
+        kdense = default_kdense(aocode)
 
-    try:
-        return _calc_two_center_intg(aodata1, aodata2, Ecut, kind)
-    finally:
-        CFG.AOFT_QGRID_DEN = original_kdense
-
-
-def _calc_two_center_intg(aodata1, aodata2, Ecut, kind):
-    """Internal implementation of overlap calculation."""
-    is_selfolp = aodata2 is None
-    if is_selfolp:
-        aodata2 = aodata1
-    else:
-        assert np.linalg.norm(aodata1.structure.rprim - aodata2.structure.rprim) < 1e-4
-        assert np.sort(aodata1.structure.atomic_species) == np.sort(aodata2.structure.atomic_species)
-
-    struc1 = aodata1.structure
-    struc2 = aodata2.structure
-
-    aodata1.calc_phiQ(Ecut)
-    if not is_selfolp:
-        aodata2.calc_phiQ(Ecut)
-
-    # find lmax and GLLL
-    lmax = 0
-    for spc in struc1.atomic_species:
-        l1max = max(aodata1.ls_spc[spc])
-        l2max = 0 if is_selfolp else max(aodata2.ls_spc[spc])
-        lmax = max(l1max, l2max, lmax)
-    GLLL = gaunt(lmax)
-
-    # initialize splines of two-center integral
-    orbpairs = {}  # Dict[(int, int) -> List]
-    for ispc in range(struc1.nspc):
-        range2 = range(ispc, struc1.nspc) if is_selfolp else range(struc2.nspc)
-        for jspc in range2:
-            spc1 = struc1.atomic_species[ispc]
-            spc2 = struc2.atomic_species[jspc]
-            orbpairs_thisij = []
-            for iorb in range(aodata1.nradial_spc[spc1]):
-                # for Z1==Z2: only needs to calculate half of the splines
-                istartj = iorb if (is_selfolp and (spc1 == spc2)) else 0
-                for jorb in range(istartj, aodata2.nradial_spc[spc2]):
-                    r1 = aodata1.phirgrids_spc[spc1][iorb].rcut
-                    r2 = aodata2.phirgrids_spc[spc2][jorb].rcut
-                    rcut = r1 + r2
-                    tic_splines = TwoCenterIntgSplines(
-                        aodata1.phiQlist_spc[spc1][iorb], aodata2.phiQlist_spc[spc2][jorb], rcut, kind=kind, GLLL=GLLL
-                    )
-                    orbpairs_thisij.append(tic_splines)
-            orbpairs[(spc1, spc2)] = orbpairs_thisij
-
-    if is_selfolp:
-        pairs_ij = pairs_within_cutoff(struc1, aodata1.cutoffs)
-        pairs_ij.sort()
-        pairs_ij.remove_ji()
-    else:
-        pairs_ij = pairs_within_cutoff(struc1, aodata1.cutoffs, structure2=struc2, cutoffs2=aodata2.cutoffs)
-
-    overlaps = MatAO.init_mats(pairs_ij, aodata1, aodata2=aodata2, filling_value=None)
-
-    translations = overlaps.translations
-    atom_pairs = overlaps.atom_pairs
-    # spc_pairs = stru.atomic_numbers[atom_pairs]
-    spc_pairs = np.column_stack([struc1.atomic_numbers[atom_pairs[:, 0]], struc2.atomic_numbers[atom_pairs[:, 1]]])
-
-    # If self-olp:
-    # Pairs are sorted first according to atomic numbers, then according to atomic species.
-    # Therefore, pairs with the same atomic species are close to each other.
-    # Furthermore, for each pair of atomic species (Z2, Z1) where Z2>Z1,
-    # it must appear after the pair (Z1, Z2).
-
-    slices_ij = slice_same(spc_pairs[:, 0] * 200 + spc_pairs[:, 1])
-
-    for ix_ij in range(len(slices_ij) - 1):
-        start_ij = slices_ij[ix_ij]
-        end_ij = slices_ij[ix_ij + 1]
-        nthisij = end_ij - start_ij
-        thisij = slice(start_ij, end_ij)
-        spc1, spc2 = spc_pairs[start_ij]
-
-        # allocate S array
-        size1 = aodata1.norbfull_spc[spc1]
-        size2 = aodata2.norbfull_spc[spc2]
-        S_thisij = np.empty((nthisij, size1, size2))
-
-        # calculate overlap using splines
-        pos_i = struc1.atomic_positions_cart[atom_pairs[thisij, 0]]
-        pos_j = struc2.atomic_positions_cart[atom_pairs[thisij, 1]]
-        Rs_thisij = translations[thisij, :] @ struc1.rprim + pos_j - pos_i  # struc1 and struc2 have the same rprim
-        orbpairs_thisij = orbpairs[(spc1, spc2)]
-        ix_orbpair = 0
-        for iorb in range(aodata1.nradial_spc[spc1]):
-            istartj = iorb if (is_selfolp and (spc1 == spc2)) else 0
-            for jorb in range(istartj, aodata2.nradial_spc[spc2]):
-                # print(iorb, jorb)
-                # print(spc1, spc2, iorb, jorb)
-                slice1 = slice(aodata1.orbslices_spc[spc1][iorb], aodata1.orbslices_spc[spc1][iorb + 1])
-                slice2 = slice(aodata2.orbslices_spc[spc2][jorb], aodata2.orbslices_spc[spc2][jorb + 1])
-                orbpair_splines = orbpairs_thisij[ix_orbpair]
-                olp = orbpair_splines.calc(Rs_thisij)
-                S_thisij[:, slice1, slice2] = olp
-                if is_selfolp and (spc1 == spc2) and (jorb > iorb):
-                    olp = orbpair_splines.calc(-Rs_thisij)
-                    S_thisij[:, slice2, slice1] = olp.transpose(0, 2, 1)
-                ix_orbpair += 1
-
-        # send overlaps to their correct positions
-        for ii in range(nthisij):
-            # ipair = argsort_ijji[start_ij + ii]
-            overlaps.mats[start_ij + ii] = S_thisij[ii]
-
-    if is_selfolp:
-        overlaps.unfold_with_hermiticity()
-
+    aodata = load_aodata_from_files(poscar_path, basis_path, aocode)
+    overlaps = calc_overlap(aodata, Ecut=ecut, kdense=kdense)
+    if spinful:
+        overlaps.spinless_to_spinful()
     return overlaps
+
+
+def save_overlap_from_files(
+    poscar_path: str | Path,
+    basis_path: str | Path,
+    aocode: str,
+    *,
+    output_dir: str | Path | None = None,
+    spinful: bool = False,
+    ecut: Optional[float] = None,
+    kdense: Optional[float] = None,
+    force: bool = False,
+):
+    """
+    Calculate and save ``POSCAR``, ``info.json``, and ``overlap.h5``.
+
+    The matrix and metadata are written with HPRO's DeepH-format writers.
+    """
+    from HPRO.io.deephio import save_mat_deeph, save_structure_deeph
+
+    poscar_path = Path(poscar_path)
+    output_dir = Path(output_dir) if output_dir is not None else poscar_path.parent
+    overlap_file = output_dir / "overlap.h5"
+
+    if overlap_file.exists() and not force:
+        raise FileExistsError(f"{overlap_file} already exists; use force=True to overwrite it.")
+
+    overlaps = calc_overlap_from_files(
+        poscar_path,
+        basis_path,
+        aocode,
+        spinful=spinful,
+        ecut=ecut,
+        kdense=kdense,
+    )
+    save_structure_deeph(overlaps.structure, str(output_dir), spinful=spinful)
+    save_mat_deeph(str(output_dir), overlaps, "o")
+    return overlaps
+
+
+def calc_overlap_in_memory(
+    structure_dict: dict,
+    basis_path: str | Path,
+    aocode: str,
+    *,
+    spinful: bool = False,
+    ecut: Optional[float] = None,
+    kdense: Optional[float] = None,
+):
+    """
+    Calculate the overlap matrix from an in-memory atomic structure.
+
+    Returns info and overlap in DeepH-format.
+
+    Parameters
+    ----------
+    structure_dict : dict
+        Must contain ``lattice`` (3, 3), ``atomic_numbers`` (Natom,) and
+        ``frac_coords`` (Natom, 3).
+    basis_path : str or Path
+        Directory containing the basis files (OpenMX PAO files +
+        ``basis_info.json``, or one SIESTA ``.ion`` file per element).
+    aocode : str
+        Basis code: "siesta" or "openmx".
+    spinful : bool, optional
+        If True, return the expanded overlap matrix as [[S, 0], [0, S]].
+        Default: False.
+    ecut : float, optional
+        Energy cutoff of Fourier transforms. Default: interface-specific (1800
+        for OpenMX, 100 for SIESTA).
+    kdense : float, optional
+        K point density of Fourier transforms. Default: 15.0 for OpenMX, None
+        for SIESTA.
+
+    Returns
+    -------
+    info_dict : dict
+        DeepH info metadata (spinful, elements_orbital_map, ...).
+    overlap_data : dict
+        DeepH-format overlap (atom_pairs, chunk_boundaries, chunk_shapes,
+        entries).
+    """
+    import numpy as np
+    from HPRO.utils.structure import Structure
+    from HPRO.io.aodata import AOData
+    from deepx_dock.CONSTANT import BOHR_TO_ANGSTROM
+
+    aocode = normalize_aocode(aocode)
+    if ecut is None:
+        ecut = default_ecut(aocode)
+    if kdense is None:
+        kdense = default_kdense(aocode)
+
+    structure = Structure(
+        np.array(structure_dict["lattice"]) / BOHR_TO_ANGSTROM,
+        np.array(structure_dict["atomic_numbers"]),
+        np.array(structure_dict["frac_coords"]),
+        atomic_positions_is_cart=False,
+        efermi=None,
+    )
+    aodata = AOData(structure, basis_path_root=str(basis_path), aocode=aocode)
+    overlaps = calc_overlap(aodata, Ecut=ecut, kdense=kdense)
+
+    if spinful:
+        overlaps.spinless_to_spinful()
+
+    return matao2deepx(overlaps)
+
+
+def matao2deepx(matao):
+    """
+    Convert an HPRO MatAO object to DeepH-format dicts.
+    The order of atoms are not sorted so that the atoms of the same species may
+    not be continuous.
+
+    Parameters
+    ----------
+    matao : HPRO MatAO object.
+
+    Returns
+    -------
+    info_dict : dict
+        DeepH info metadata.
+    obs_dict : dict
+        DeepH-format observables (atom_pairs, chunk_boundaries, chunk_shapes,
+        entries).
+    """
+    import numpy as np
+    from HPRO.constants import hartree2ev
+    from deepx_dock.CONSTANT import PERIODIC_TABLE_INDEX_TO_SYMBOL
+
+    stru = matao.structure
+    aodata = matao.aodata1
+
+    # save info dict
+    info_dict = {}
+    info_dict["atoms_quantity"] = stru.natom
+    info_dict["orbits_quantity"] = sum(aodata.norbfull_spc[spc] for spc in stru.atomic_numbers)
+    info_dict["orthogonal_basis"] = False
+    info_dict["spinful"] = matao.spinful
+    info_dict["fermi_energy_eV"] = stru.efermi * hartree2ev if stru.efermi is not None else None
+    info_dict["elements_orbital_map"] = {
+        PERIODIC_TABLE_INDEX_TO_SYMBOL[number]: ls for number, ls in aodata.ls_spc.items()
+    }
+
+    atom_pairs = np.concatenate((matao.translations, matao.atom_pairs), axis=1, dtype="i8")
+    shapes = np.array([mat.shape for mat in matao.mats])
+    sizes = np.array([mat.size for mat in matao.mats])
+    displ = np.concatenate([[0], np.cumsum(sizes)])
+    flatmat = np.concatenate([mat.reshape(-1) for mat in matao.mats])
+
+    obs_dict = {
+        "atom_pairs": atom_pairs,
+        "chunk_boundaries": displ,
+        "chunk_shapes": shapes,
+        "entries": flatmat,
+    }
+    return info_dict, obs_dict
