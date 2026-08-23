@@ -162,7 +162,7 @@ def compare_petsc_files(file1: Union[str, Path], file2: Union[str, Path], thresh
         return False, f"File {file2} does not exist"
 
     def load_petsc(filename):
-        viewer = PETSc.Viewer().createBinary(filename, mode="r")
+        viewer = PETSc.Viewer().createBinary(str(filename), mode="r")
         R_mat = PETSc.Mat()
         R_mat.load(viewer)
         indptr, indices, data = R_mat.getValuesCSR()

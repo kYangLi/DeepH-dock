@@ -171,12 +171,13 @@ def test_overlap_batch_mode(raw_species_dir, openmx_test_data):
 def test_overlap_cli_help():
     """Test CLI help command."""
     result = subprocess.run(
-        ["dock", "compute", "overlap", "openmx", "--help"],
+        ["dock", "compute", "overlap", "--help"],
         capture_output=True,
         text=True,
     )
 
     assert result.returncode == 0
-    assert "SPECIES_FILE" in result.stdout
+    assert "BASIS_PATH" in result.stdout
     assert "--tier-num" in result.stdout
-    assert "--raw-species-dir" in result.stdout
+    assert "--ecut" in result.stdout
+    assert "--kdense" in result.stdout
