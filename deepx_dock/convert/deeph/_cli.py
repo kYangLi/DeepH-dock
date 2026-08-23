@@ -207,3 +207,73 @@ def translate_new_to_old(
     )
     transfer.transfer_all_new_to_old()
     click.echo("[done] Translation completed successfully!")
+
+
+# ------------------------------------------------------------------------------
+@register(
+    cli_name="standardize-force",
+    cli_help="Shift/unshift per-element reference energies (E0s) for force field data.",
+    cli_args=[
+        click.argument(
+            "data_dir",
+            type=click.Path(exists=True, file_okay=False),
+        ),
+        click.option(
+            "--backward",
+            is_flag=True,
+            help="Unshift: add back E0s to the target file. Requires --e0s-file.",
+        ),
+        click.option(
+            "--filename",
+            type=str,
+            default="force.h5",
+            show_default=True,
+            help="Target HDF5 filename within each data directory.",
+        ),
+        click.option(
+            "--e0s-file",
+            type=click.Path(exists=True, dir_okay=False),
+            default=None,
+            help="Path to e0s.json for loading E0s. Required for --backward. "
+            "If omitted in forward mode, E0s are computed from the dataset.",
+        ),
+        click.option(
+            "--e0s-output",
+            type=click.Path(dir_okay=False),
+            default=None,
+            help="Path to save e0s.json in forward-compute mode. "
+            "Defaults to ./e0s.json in the current working directory.",
+        ),
+        click.option(
+            "--jobs-num",
+            "-j",
+            type=int,
+            default=-1,
+            help="The parallel processing number, -1 for using all of the cores.",
+        ),
+        click.option(
+            "--tier-num",
+            "-t",
+            type=int,
+            default=0,
+            help="The tier number of the source data, -1 for [source], 0 for <source>/<data_dirs>, 1 for <source>/<tier1>/<data_dirs>, etc.",
+        ),
+    ],
+)
+def standardize_force(data_dir, backward, filename, e0s_file, e0s_output, jobs_num, tier_num):
+    data_dir = Path(data_dir).resolve()
+    if not data_dir.is_dir():
+        raise FileNotFoundError(f"The data path `{data_dir}` does not exist!")
+    from deepx_dock.convert.deeph.standardize_force import DatasetForceStandardize
+
+    std_obj = DatasetForceStandardize(
+        data_dir=data_dir,
+        backward=backward,
+        filename=filename,
+        e0s_file=e0s_file,
+        e0s_output=e0s_output,
+        n_jobs=jobs_num,
+        n_tier=tier_num,
+    )
+    std_obj.standardize_all()
+    click.echo("[done] Force standardization completed successfully!")
