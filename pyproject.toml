@@ -94,6 +94,13 @@ petsc = [
     "petsc4py",
 ]
 
+slepc = [
+    "mpi4py",
+    "numpy",
+    "slepc",
+    "slepc4py",
+]
+
 pyscf = [
     "pyscf",
 ]

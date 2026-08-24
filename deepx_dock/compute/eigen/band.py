@@ -227,6 +227,65 @@ class BandDataGenerator:
                 hf.create_dataset(key, data=value)
 
 
+class PETScBandDataGenerator(BandDataGenerator):
+    """
+    Band data generator based on the MPI-parallel PETSc/SLEPc eigensolver.
+
+    A partial spectrum of ``num_band`` bands around the target energy is
+    computed, so Fermi-level corrections based on occupation statistics are not
+    applicable and the bands are shifted by the Fermi energy in info.json.
+
+    Parameters
+    ----------
+    obj_H : PETScHamiltonianObj
+        The MPI-parallel Hamiltonian object (provides ``comm``).
+    band_conf : dict
+        Band configuration. Recognized keys: ``k_list_spell`` (K_PATH file
+        text), ``num_band``, ``dim_subspace``, ``fermi_energy_eV``,
+        ``target_band_energy``, ``maxiter``, ``tol``, ``purify``,
+        ``init_space``, ``same_nonzero_pattern``.
+    """
+
+    def __init__(self, obj_H, band_conf):
+        self.comm = obj_H.comm
+        self.rank = self.comm.Get_rank()
+        self.size = self.comm.Get_size()
+        super().__init__(obj_H, band_conf)
+
+    def calc_band_data(self):
+        diag_kwargs = {key: value for key, value in self.band_conf.items() if key != "k_list_spell"}
+        self.band_data = self.obj_H.diag(self.kpoints_frac_list, bands_only=True, **diag_kwargs)
+        self.band_quantity = self.band_data.shape[0]
+        self._shift_band_data_to_fermi_zero()
+
+    def _shift_band_data_to_fermi_zero(self):
+        self.band_data -= self.fermi_energy
+        self.fermi_energy_before_shift = self.fermi_energy
+        self.fermi_energy = 0.0
+
+    def dump_band_data(self, h5file_path: str):
+        if self.rank == 0:
+            formatted_band_data = {
+                "rlv": self.rlv,
+                "spinful": self.spinful,
+                "band_quantity": self.band_quantity,
+                "fermi_energy_before_shift_eV": self.fermi_energy_before_shift,
+                "fermi_energy_eV": self.fermi_energy,
+                "k_path_quantity": self.k_path_quantity,
+                "k_path_density_list": self.k_path_density_list,
+                "hsk_vector_list": self.hsk_vector_list,
+                "hsk_symbol_list": self.hsk_symbol_list,
+                "kpoints_quantity": self.kpoints_quantity,
+                "kpoints_frac_list": self.kpoints_frac_list,
+                "kpoints_distance_list": self.kpoints_distance_list,
+                "hsk_distance_list": self.hsk_distance_list,
+                "band_data": self.band_data,
+            }
+            with h5py.File(h5file_path, "w") as hf:
+                for key, value in formatted_band_data.items():
+                    hf.create_dataset(key, data=value)
+
+
 class BandPlotter:
     def __init__(self, band_data_file_path: str | Path):
         self.band_data_file_path = Path(band_data_file_path)

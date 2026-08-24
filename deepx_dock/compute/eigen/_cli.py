@@ -110,6 +110,53 @@ def calc_band(
 
 
 @register(
+    cli_name="calc-band-petsc",
+    cli_help="Calculate the energy band using the MPI-parallel PETSc/SLEPc eigensolver and save it into h5 file.",
+    cli_args=[
+        click.argument(
+            "data_path",
+            type=click.Path(exists=True, file_okay=False, readable=True),
+        ),
+        click.option("--num-band", "--nb", type=int, default=50, help="Number of bands around the target energy."),
+        click.option(
+            "--E-target",
+            "--target",
+            type=float,
+            default=0.0,
+            help="Target band energy (relative to the fermi level in eV).",
+        ),
+        click.option("--maxiter", type=int, default=300, help="Max number of iterations."),
+        click.option(
+            "--dim-subspace",
+            type=int,
+            default=None,
+            help="Dimension of the Krylov subspace (default: 2 * num-band).",
+        ),
+    ],
+)
+def calc_band_petsc(data_path, num_band, e_target, maxiter, dim_subspace):
+    data_path = Path(data_path).resolve()
+    band_data_path = data_path / DEEPX_BAND_FILENAME
+    k_path_path = data_path / DEEPX_K_PATH_FILENAME
+    with open(k_path_path, "r") as f:
+        k_list_spell = f.read()
+    band_conf = {
+        "k_list_spell": k_list_spell,
+        "num_band": num_band,
+        "target_band_energy": e_target,
+        "maxiter": maxiter,
+    }
+    if dim_subspace is not None:
+        band_conf["dim_subspace"] = dim_subspace
+    from deepx_dock.compute.eigen.band import PETScBandDataGenerator
+    from deepx_dock.compute.eigen.hamiltonian_petsc import PETScHamiltonianObj
+    obj_H = PETScHamiltonianObj(data_path)
+    bd_gen = PETScBandDataGenerator(obj_H, band_conf)
+    bd_gen.calc_band_data()
+    bd_gen.dump_band_data(band_data_path)
+
+
+@register(
     cli_name="plot-band",
     cli_help="Plot energy band with the h5 file that is calculated already.",
     cli_args=[
@@ -361,3 +408,86 @@ def calc_dos_from_H(
         fd_fermi.dump_eigval_data()
     fd_fermi.dump_dos_data()
     fd_fermi.plot_dos_data(plot_format="png", dpi=300)
+
+
+@register(
+    cli_name="calc-dos-petsc",
+    cli_help="Calc and plot the density of states using the MPI-parallel PETSc & SLEPc eigensolver.",
+    cli_args=[
+        click.argument(
+            "data_path",
+            type=click.Path(exists=True, file_okay=False, readable=True),
+        ),
+        click.option("--num-band", "--nb", type=int, default=50, help="Number of bands around the target energy."),
+        click.option(
+            "--E-target",
+            "--target",
+            type=float,
+            default=0.0,
+            help="Target band energy (relative to the fermi level in eV).",
+        ),
+        click.option("--maxiter", type=int, default=300, help="Max number of iterations."),
+        click.option(
+            "--dim-subspace",
+            type=int,
+            default=None,
+            help="Dimension of the Krylov subspace (default: 2 * num-band).",
+        ),
+        click.option(
+            "--method",
+            type=click.Choice(["gaussian", "tetrahedron"]),
+            default="gaussian",
+            help="Calculating method for obtaining DOS. Note: tetrahedron needs a full spectrum, "
+            "which the partial PETSc spectrum cannot provide reliably.",
+        ),
+        click.option("--kp-mesh", type=(int, int, int), default=(-1, -1, -1), help="The mesh of the k points (-1 means switching to kp-density mode)."),
+        click.option("--kp-density", "-d", type=float, default=0.1, help="The density of the k points."),
+        click.option(
+            "--energy-window",
+            "--E-win",
+            type=(float, float),
+            default=(-5, 5),
+            help="Energy window (respect to the fermi energy).",
+        ),
+        click.option("--smearing", "-s", type=float, default=-1.0, help="The smearing width (eV) in gaussian method."),
+        click.option("--energy-num", "--num", type=int, default=201, help="Number of energy points."),
+    ],
+)
+def calc_dos_from_H_petsc(
+    data_path,
+    num_band,
+    e_target,
+    maxiter,
+    dim_subspace,
+    method,
+    kp_mesh,
+    kp_density,
+    energy_window,
+    smearing,
+    energy_num,
+):
+    data_path = Path(data_path).resolve()
+    diag_conf = {
+        "num_band": num_band,
+        "target_band_energy": e_target,
+        "maxiter": maxiter,
+    }
+    if dim_subspace is not None:
+        diag_conf["dim_subspace"] = dim_subspace
+    from deepx_dock.compute.eigen.fermi_dos import PETScDOSGenerator
+    from deepx_dock.compute.eigen.hamiltonian_petsc import PETScHamiltonianObj
+    obj_H = PETScHamiltonianObj(data_path)
+    fd_petsc = PETScDOSGenerator(data_path, obj_H)
+    fd_petsc.calc_dos(
+        k_mesh=kp_mesh,
+        dk=kp_density,
+        emin=energy_window[0],
+        emax=energy_window[1],
+        enum=energy_num,
+        method=method,
+        sigma=smearing,
+        **diag_conf,
+    )
+    fd_petsc.dump_eigval_data()
+    fd_petsc.dump_dos_data()
+    fd_petsc.plot_dos_data(plot_format="png", dpi=300)
