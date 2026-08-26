@@ -255,11 +255,16 @@ class PETScHamiltonianObj(HamiltonianObj):
         Translate user-facing diagonalization options into SLEPc solver options.
 
         Accepted keys: ``num_band`` (default 50), ``dim_subspace`` (default
-        ``2 * num_band``), ``fermi_energy_eV`` (default from info.json),
+        ``1.5 * num_band``), ``fermi_energy_eV`` (default from info.json),
         ``target_band_energy`` (default -0.5, relative to the Fermi level),
         ``maxiter`` (default 300), ``tol`` (default 1e-5), ``purify``
         (default True), ``init_space`` (default False) and
         ``same_nonzero_pattern`` (default True).
+
+        Note that the dense Rayleigh-Ritz workspace of the solver scales as
+        ``ncv^2`` (replicated on every rank) and the Krylov basis as ``ncv``,
+        so for large ``nev`` keep ``dim_subspace`` small (1.2~1.5 x nev is a
+        good compromise).
 
         ``same_nonzero_pattern`` is on by default: the sparsity patterns of
         H(k) and S(k) are unified (:meth:`_unify_sparse_pattern`) so that the
@@ -275,7 +280,7 @@ class PETScHamiltonianObj(HamiltonianObj):
             ``purify``, ``init_space``, ``same_nonzero_pattern``.
         """
         _num_band = kwargs.get("num_band", 50)
-        _ncv = kwargs.get("dim_subspace", int(2 * _num_band))
+        _ncv = kwargs.get("dim_subspace", int(1.5 * _num_band))
         _fermi_energy = kwargs.get("fermi_energy_eV", self.fermi_energy)
         _target_band_energy = kwargs.get("target_band_energy", -0.5)
         _maxiter = kwargs.get("maxiter", 300)
@@ -330,26 +335,32 @@ class PETScHamiltonianObj(HamiltonianObj):
         kwargs_now = self.parse_diag_kwargs(kwargs)
         eps = self._initialize_solver(**kwargs_now)
         eigvals_list = []
-        eigvecs_list = []
+        eigvecs = None
         for ik, k in enumerate(ks):
             PETSc.Sys.Print(f"\n[do] k point {ik + 1}/{len(ks)} ...", flush=True)
             t1 = time.perf_counter()
-            result_k = self.diag_one_k(eps, k, bands_only=bands_only, **kwargs_now)
+            result_k = self.diag_one_k(eps, k, bands_only=bands_only, early_reset_ST=(ik == len(ks) - 1), **kwargs_now)
             if bands_only:
                 eigvals_list.append(result_k)
             else:
                 eigvals_list.append(result_k[0]) # [Nband]
-                eigvecs_list.append(result_k[1]) # [Norb_local, Nband]
+                block_k = result_k[1] # [Norb_local, Nband]
+                if eigvecs is None:
+                    eigvecs = np.empty((block_k.shape[0], block_k.shape[1], len(ks)), dtype=block_k.dtype)
+                assert eigvecs.shape[:2] == block_k.shape, (
+                    f"Eigenvector block shape changed across k-points: {block_k.shape} vs {eigvecs.shape[:2]}"
+                )
+                eigvecs[:, :, ik] = block_k
+                del block_k, result_k
             PETSc.Sys.Print(f"[done] k point {ik + 1}/{len(ks)}. Total Time: {time.perf_counter() - t1:.2f} sec", flush=True)
         eps.destroy()
         self._destroy_work_vecs()
         eigvals = np.stack(eigvals_list, axis=1) # [Nband, Nk]
         if bands_only:
             return eigvals
-        eigvecs = np.stack(eigvecs_list, axis=2) # [Norb_local, Nband, Nk]
         return eigvals, eigvecs
 
-    def diag_one_k(self, eps: SLEPc.EPS, k, bands_only: bool = True, **kwargs):
+    def diag_one_k(self, eps: SLEPc.EPS, k, bands_only: bool = True, early_reset_ST: bool = False, **kwargs):
         """
         Diagonalize the Hamiltonian at one k-point.
 
@@ -361,6 +372,10 @@ class PETScHamiltonianObj(HamiltonianObj):
             k-point in fractional coordinates.
         bands_only : bool, optional
             See :meth:`diag`. Default: True.
+        early_reset_ST : bool, optional
+            Whether this is the last k-point of the :meth:`diag` loop. If set
+            and eigenvectors are requested, the factorization is released
+            before the collection loop (see :meth:`_solve`). Default: False.
         **kwargs : dict
             Solver options from :meth:`parse_diag_kwargs`.
 
@@ -397,7 +412,7 @@ class PETScHamiltonianObj(HamiltonianObj):
         PETSc.Sys.Print(f"[time] Set up the solver: {time.perf_counter() - t1:.2f} sec", flush=True)
         t1 = time.perf_counter()
         ## Solve the problem
-        result_k = self._solve(eps, bands_only, kwargs["init_space"], kwargs["nev"], kwargs["max_it"], Sk)
+        result_k = self._solve(eps, bands_only, kwargs["init_space"], kwargs["nev"], kwargs["max_it"], Sk, early_reset_ST=early_reset_ST)
         Sk.destroy()
         Hk.destroy()
         PETSc.garbage_cleanup(comm=self.comm)
@@ -491,17 +506,27 @@ class PETScHamiltonianObj(HamiltonianObj):
         st.destroy()
         return eps
 
-    def _solve(self, eps: SLEPc.EPS, bands_only: bool, init_space: bool, nev: int, max_it: int, Sk: PETSc.Mat):
+    def _solve(
+        self, eps: SLEPc.EPS, bands_only: bool, init_space: bool, nev: int, max_it: int, Sk: PETSc.Mat, early_reset_ST: bool = False
+    ):
         """
         Solve the configured EPS problem and collect the results.
 
-        Eigenvectors kept as distributed PETSc vectors are B-normalized
-        individually and gathered into global numpy arrays (one column per
-        eigenvector) when required.
+        Eigenvectors are B-normalized individually and written directly into a
+        preallocated rank-local numpy block ``[N_local, Nband]`` (PETSc vector
+        copies are only kept for the ``init_space`` mechanism).
+
+        When ``early_reset_ST`` is set and eigenvectors are requested, the spectral
+        transform's factorization is released (``STReset``) before the
+        collection loop, lowering the peak memory of the extract-and-store
+        phase. The eigenvectors live in the solver's DS/BV objects, which are
+        unaffected by the ST reset.
         """
         t1 = time.perf_counter()
         ## Solve!
         eps.solve()
+        PETSc.Sys.Print(f"[time] Solve: {time.perf_counter() - t1:.2f} sec", flush=True)
+        t1 = time.perf_counter()
         ## Get the results
         if self.rank == 0:
             nconv = eps.getConverged()
@@ -524,14 +549,25 @@ class PETScHamiltonianObj(HamiltonianObj):
         eigenvalues = self.comm.bcast(eigenvalues, root=0)
 
         eigenvectors: list = []
+        local_block = None
         if init_space or (not bands_only):
+            if not bands_only:
+                rstart, rend = self.vecs_empty[0].getOwnershipRange()
+                local_block = np.empty((rend - rstart, len(sort_idx)), dtype=PETSc.ScalarType)
+            if early_reset_ST:
+                ## release the factorization before the collection loop to lower
+                ## the peak memory (eigenvectors live in DS/BV, not in the ST)
+                eps.getST().reset()
             vec = self.vecs_empty[0].duplicate()
-            for i in sort_idx:
+            for col, i in enumerate(sort_idx):
                 ## PETSc is assumed to be compiled with complex dtype
                 ## so that Vr stores the whole complex eigvec and Vi is emtpy
                 eps.getEigenvector(i, Vr=vec)
                 self._vec_normalize(vec, Sk, self.vecs_empty[1])
-                eigenvectors.append(vec.copy())
+                if local_block is not None:
+                    local_block[:, col] = vec.getArray(readonly=True)
+                if init_space:
+                    eigenvectors.append(vec.copy())
             vec.destroy()
 
         if init_space:
@@ -540,7 +576,7 @@ class PETScHamiltonianObj(HamiltonianObj):
             eps.setInitialSpace(eigenvectors)
             self._init_space_vecs = list(eigenvectors)
 
-        PETSc.Sys.Print(f"[time] Solve: {time.perf_counter() - t1:.2f} sec", flush=True)
+        PETSc.Sys.Print(f"[time] Postprocess: {time.perf_counter() - t1:.2f} sec", flush=True)
         if nconv < nev:
             PETSc.Sys.Print(
                 f"[warning] The number of converged eigenvalues ({nconv}) is less than expected ({nev})!", flush=True
@@ -557,16 +593,6 @@ class PETScHamiltonianObj(HamiltonianObj):
 
         if bands_only:
             return eigenvalues
-        if eigenvectors:
-            ## local row blocks stacked per eigenvector: [N_local, Nband]
-            ## (np.stack copies, so destroying the PETSc vectors below is safe)
-            local_block = np.stack([vr.getArray(readonly=True) for vr in eigenvectors], axis=1)
-        else:
-            rstart, rend = self.vecs_empty[0].getOwnershipRange()
-            local_block = np.zeros((rend - rstart, 0), dtype=PETSc.ScalarType)
-        if not init_space:
-            for vr in eigenvectors:
-                vr.destroy()
         return eigenvalues, local_block
 
     def _vec_normalize(self, vec, Sk, tmp) -> None:

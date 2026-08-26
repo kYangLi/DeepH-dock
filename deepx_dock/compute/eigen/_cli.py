@@ -130,7 +130,7 @@ def calc_band(
             "--dim-subspace",
             type=int,
             default=None,
-            help="Dimension of the Krylov subspace (default: 2 * num-band).",
+            help="Dimension of the Krylov subspace (default: 1.5 * num-band).",
         ),
     ],
 )
@@ -431,7 +431,7 @@ def calc_dos_from_H(
             "--dim-subspace",
             type=int,
             default=None,
-            help="Dimension of the Krylov subspace (default: 2 * num-band).",
+            help="Dimension of the Krylov subspace (default: 1.5 * num-band).",
         ),
         click.option(
             "--method",
