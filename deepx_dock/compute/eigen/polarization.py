@@ -264,8 +264,10 @@ class PolCalc:
 
         Returns
         -------
-        pol_frac : np.ndarray, shape (3,)
-            Electronic polarization in fractional coordinates (mod 1).
+        dipole_frac : np.ndarray, shape (3,)
+            Electronic dipole in fractional coordinates, with the electron
+            charge (-e) folded in, so that
+            ``dipole_elec = dipole_frac @ lattice``.
         """
         _k_mesh = tuple(int(n) for n in k_mesh)
         ks = self._ks(_k_mesh)
@@ -297,7 +299,7 @@ class PolCalc:
         n_jobs = n_jobs if parallel_k else 1
         set_num_threads(n_blas_threads)
 
-        pol_frac = np.zeros(3)
+        wcc_frac = np.zeros(3)
         for direction in range(3): # calc polarization along this direction
             tR = self._build_tR(_k_mesh, direction)
             tk = self._r2k_complex(tR, ks, self.obj_H.Rijk_list)  # (Nk, Norb, Norb)
@@ -330,11 +332,14 @@ class PolCalc:
             if winding != (0, 0):
                 self._warn_topological(winding, direction, trans)
             ## integrate on the transverse directions (ka and kb)
-            pol_frac[direction] = - (2 - self.spinful) * np.mean(berry_phases)
+            ## the minus sign comes from the definition of berry phase and wannier charge center
+            ## berry_phase ~= \int <u(k)|u(k+dk)>dk ~= -1 * wannier_charge_center
+            wcc_frac[direction] = - (2 - self.spinful) * np.mean(berry_phases)
 
-        self.pol_frac_elec = pol_frac
-        self.dipole_elec = -pol_frac @ self.lattice  # e*Angstrom
-        return pol_frac
+        ## the minus sign comes from the negative charge of electrons
+        self.dipole_frac_elec = -wcc_frac
+        self.dipole_elec = -wcc_frac @ self.lattice  # e*Angstrom
+        return -wcc_frac
 
     @staticmethod
     def _berry_phase_inputs(
@@ -433,12 +438,14 @@ class PolCalc:
 
         Returns
         -------
-        pol_frac : np.ndarray, shape (3,)
-            Ionic polarization in fractional coordinates (mod 1).
+        dipole_frac : np.ndarray, shape (3,)
+            Ionic dipole in fractional coordinates, with the ionic charges (+Z)
+            folded in, so that
+            ``dipole_ion = dipole_frac @ lattice``.
         """
         self.dipole_ion = np.einsum("i,ij->j", self.z_ion, self.cart_coords)  # e*Angstrom
-        self.pol_frac_ion = np.einsum("i,ij->j", self.z_ion, self.frac_coords)  # dimensionless
-        return self.pol_frac_ion
+        self.dipole_frac_ion = np.einsum("i,ij->j", self.z_ion, self.frac_coords)  # dimensionless
+        return self.dipole_frac_ion
 
     def calc(self, k_mesh: List | Tuple, **diag_kwargs):
         """
@@ -454,15 +461,18 @@ class PolCalc:
         Returns
         -------
         dict with keys:
-            pol_frac_elec, pol_frac_ion, pol_frac_total : np.ndarray (3,)
+            dipole_frac_elec, dipole_frac_ion, dipole_frac_total : np.ndarray (3,)
+                Dipoles in fractional coordinates (only reasonable under
+                ``mod 1``), with charges folded in (-e for electronic, +Z for
+                ionic), so that ``dipole_X = dipole_frac_X @ lattice``.
             dipole_elec, dipole_ion, dipole_total : np.ndarray (3,)  (e*Angstrom)
             dipole_debye, dipole_elec_debye, dipole_ion_debye : np.ndarray (3,)
             polarization_mucm2, polarization_elec_mucm2, polarization_ion_mucm2
             band_gap : float  (HOMO-LUMO gap in eV)
         """
-        pol_frac_elec = self.electronic_polarization(k_mesh, **diag_kwargs)
-        pol_frac_ion = self.ionic_polarization()
-        pol_frac_total = pol_frac_elec + pol_frac_ion
+        dipole_frac_elec = self.electronic_polarization(k_mesh, **diag_kwargs)
+        dipole_frac_ion = self.ionic_polarization()
+        dipole_frac_total = dipole_frac_elec + dipole_frac_ion
 
         dipole_elec = self.dipole_elec  # e*Angstrom
         dipole_ion = self.dipole_ion
@@ -479,9 +489,9 @@ class PolCalc:
         mucm_total = AU2MUCM * dipole_total / (self.volume * ANGSTROM_TO_BOHR**2)
 
         result = {
-            "pol_frac_elec": pol_frac_elec,
-            "pol_frac_ion": pol_frac_ion,
-            "pol_frac_total": pol_frac_total,
+            "dipole_frac_elec": dipole_frac_elec,
+            "dipole_frac_ion": dipole_frac_ion,
+            "dipole_frac_total": dipole_frac_total,
             "dipole_elec": dipole_elec,
             "dipole_ion": dipole_ion,
             "dipole_total": dipole_total,
@@ -500,7 +510,7 @@ class PolCalc:
         print("          Ionic          Electronic     Total")
         for a in range(3):
             print(
-                f"  {labels[a]}   {pol_frac_ion[a]:+12.6f}   {pol_frac_elec[a]:+12.6f}   {pol_frac_total[a]:+12.6f}"
+                f"  {labels[a]}   {dipole_frac_ion[a]:+12.6f}   {dipole_frac_elec[a]:+12.6f}   {dipole_frac_total[a]:+12.6f}"
             )
         print("\nDipole moment (eA):")
         print("          Ionic          Electronic     Total")
