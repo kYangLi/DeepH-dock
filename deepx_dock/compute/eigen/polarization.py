@@ -299,12 +299,13 @@ class PolCalc:
         n_jobs = n_jobs if parallel_k else 1
         set_num_threads(n_blas_threads)
 
-        wcc_frac = np.zeros(3)
+        wccs_frac = np.zeros(3)
+        windings = []
         for direction in range(3): # calc polarization along this direction
             tR = self._build_tR(_k_mesh, direction)
             tk = self._r2k_complex(tR, ks, self.obj_H.Rijk_list)  # (Nk, Norb, Norb)
 
-            trans = [a for a in range(3) if a != direction]
+            trans = [(direction + 1) % 3, (direction + 2) % 3]
             na, nb = _k_mesh[trans[0]], _k_mesh[trans[1]]
 
             with threadpoolctl.threadpool_limits(limits=n_blas_threads, user_api="blas"):
@@ -315,31 +316,39 @@ class PolCalc:
                             inputs = self._berry_phase_inputs(
                                 _k_mesh, ia, ib, direction, trans, eigvecs_occ, tk, inv_k_idx
                             )
-                            berry_phases[ia, ib] = self._berry_phase_1d(inputs)
+                            berry_phases[ia, ib] = self._berry_phase(inputs)
                 else:
                     worker_inputs = [self._berry_phase_inputs(
                         _k_mesh, ia, ib, direction, trans, eigvecs_occ, tk, inv_k_idx
                     ) for ia in range(na) for ib in range(nb)]
                     berry_phases = parallel_map(
-                        self._berry_phase_1d, worker_inputs, n_jobs=n_jobs,
+                        self._berry_phase, worker_inputs, n_jobs=n_jobs,
                         desc=f"Berry phase along k{direction+1}",
                     )
                     berry_phases = np.asarray(berry_phases, dtype=np.float64).reshape((na, nb))
-
             ## align the wrapped berry phases into a continuous function on
             ## the transverse torus, so that the average has no branch jumps
             berry_phases, winding = self._align_berry_phases(berry_phases)
+            ## winding[0] and winding[1] are change of berry_phases (e.g., x)
+            ## along the two transverse directions (e.g., y and z),
+            ## windings = [[w^x_y, w^x_z], [w^y_z, w^y_x], [w^z_x, w^z_y]]
+            windings.append(winding)
             if winding != (0, 0):
                 self._warn_topological(winding, direction, trans)
             ## integrate on the transverse directions (ka and kb)
-            ## the minus sign comes from the definition of berry phase and wannier charge center
-            ## berry_phase ~= \int <u(k)|u(k+dk)>dk ~= -1 * wannier_charge_center
-            wcc_frac[direction] = - (2 - self.spinful) * np.mean(berry_phases)
+            ## berry_phase/2π = WCC sum along this string (no minus sign)
+            wccs_frac[direction] = (2 - self.spinful) * np.mean(berry_phases)
+
+        self.chern_numbers = [
+            (2 - self.spinful) * windings[2][1],
+            (2 - self.spinful) * windings[0][1],
+            (2 - self.spinful) * windings[1][1],
+        ]
 
         ## the minus sign comes from the negative charge of electrons
-        self.dipole_frac_elec = -wcc_frac
-        self.dipole_elec = -wcc_frac @ self.lattice  # e*Angstrom
-        return -wcc_frac
+        self.dipole_frac_elec = -wccs_frac
+        self.dipole_elec = -wccs_frac @ self.lattice  # e*Angstrom
+        return -wccs_frac
 
     @staticmethod
     def _berry_phase_inputs(
@@ -360,13 +369,16 @@ class PolCalc:
         return c1, c2, t12
 
     @staticmethod
-    def _berry_phase_1d(inputs):
+    def _berry_phase(inputs):
         c1, c2, t12 = inputs
         ## <u_k1|u_k2> = c_k1^* <φ1|exp(-i(k2-k1)r)|φ2> c_k2 = c_k1^* t_k1k2 c_k2
         Sop = np.einsum("imb,bij,jnb->bmn", c1.conj(), t12, c2)
         dets = np.linalg.det(Sop) # operates on the last two dims
         ## berry phase of this string (in units of 2π)
-        return np.angle(dets.prod()) / (2.0 * np.pi)
+        ## berry phase/2π = \int A dk = \int <u(k)|i∂_k u(k)> dk = -angle(<u(k)|u(k+dk)>)
+        ## this is where the factor -1 comes from
+        berry_phase = -1.0 * np.angle(dets.prod()) / (2.0 * np.pi)
+        return berry_phase
 
     def _warn_metal(self, gap):
         import warnings
@@ -410,8 +422,8 @@ class PolCalc:
         wrap = lambda x: (x + 0.5) % 1.0 - 0.5
 
         # Wrapped nearest-neighbor differences (periodic boundaries).
-        Dx = wrap(np.roll(phase, -1, axis=0) - phase)  # along ia
-        Dy = wrap(np.roll(phase, -1, axis=1) - phase)  # along ib
+        Dx = wrap(np.roll(phase, -1, axis=0) - phase) # phase[ia+1,ib]-phase[ia,ib]
+        Dy = wrap(np.roll(phase, -1, axis=1) - phase) # phase[ia,ib+1]-phase[ia,ib]
 
         # Residue check (coarse mesh / phase singularity): curl must vanish.
         curl = Dx + np.roll(Dy, -1, axis=0) - np.roll(Dx, -1, axis=1) - Dy
@@ -468,6 +480,10 @@ class PolCalc:
             dipole_elec, dipole_ion, dipole_total : np.ndarray (3,)  (e*Angstrom)
             dipole_debye, dipole_elec_debye, dipole_ion_debye : np.ndarray (3,)
             polarization_mucm2, polarization_elec_mucm2, polarization_ion_mucm2
+            chern_numbers : list[int]
+                Chern numbers (C_yz, C_zx, C_xy) under the standard
+                right-handed orientation. For spinless systems the value is
+                the total-charge Chern number (2x the per-spin one).
             band_gap : float  (HOMO-LUMO gap in eV)
         """
         dipole_frac_elec = self.electronic_polarization(k_mesh, **diag_kwargs)
@@ -501,11 +517,13 @@ class PolCalc:
             "polarization_mucm2": mucm_total,
             "polarization_elec_mucm2": mucm_elec,
             "polarization_ion_mucm2": mucm_ion,
+            "chern_numbers": self.chern_numbers,
             "band_gap": self.band_gap,
         }
 
         labels = ["x", "y", "z"]
         print(f"Band gap = {self.band_gap:.6f} eV")
+        print(f"Chern numbers = {self.chern_numbers} (yz, zx, xy)")
         print("\nDipole moment (fractional):")
         print("          Ionic          Electronic     Total")
         for a in range(3):
