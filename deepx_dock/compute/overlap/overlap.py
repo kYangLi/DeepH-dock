@@ -53,7 +53,7 @@ def load_aodata_from_files(poscar_path: str | Path, basis_path: str | Path, aoco
     return AOData(structure, basis_path_root=str(basis_path), aocode=aocode)
 
 
-def calc_overlap(aodata1, aodata2=None, Ecut=OPENMX_DEFAULT_ECUT, kdense=OPENMX_DEFAULT_KDENSE):
+def calc_overlap(aodata1, aodata2=None, Ecut=OPENMX_DEFAULT_ECUT, kdense=OPENMX_DEFAULT_KDENSE, **kwargs):
     """
     Calculate an AO overlap matrix using HPRO.
 
@@ -62,7 +62,7 @@ def calc_overlap(aodata1, aodata2=None, Ecut=OPENMX_DEFAULT_ECUT, kdense=OPENMX_
     """
     from HPRO.v2h.twocenter import calc_overlap as hpro_calc_overlap
 
-    return hpro_calc_overlap(aodata1, aodata2=aodata2, Ecut=Ecut, kdense=kdense)
+    return hpro_calc_overlap(aodata1, aodata2=aodata2, Ecut=Ecut, kdense=kdense, **kwargs)
 
 
 def calc_overlap_from_files(
@@ -105,10 +105,11 @@ def save_overlap_from_files(
     The matrix and metadata are written with HPRO's DeepH-format writers.
     """
     from HPRO.io.deephio import save_mat_deeph, save_structure_deeph
+    from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
 
     poscar_path = Path(poscar_path)
     output_dir = Path(output_dir) if output_dir is not None else poscar_path.parent
-    overlap_file = output_dir / "overlap.h5"
+    overlap_file = output_dir / DEEPX_OVERLAP_FILENAME
 
     if overlap_file.exists() and not force:
         raise FileExistsError(f"{overlap_file} already exists; use force=True to overwrite it.")
@@ -134,6 +135,8 @@ def calc_overlap_in_memory(
     spinful: bool = False,
     ecut: Optional[float] = None,
     kdense: Optional[float] = None,
+    splines_for_overlap: dict | None = None,
+    num_workers: int = 1,
 ):
     """
     Calculate the overlap matrix from an in-memory atomic structure.
@@ -159,6 +162,13 @@ def calc_overlap_in_memory(
     kdense : float, optional
         K point density of Fourier transforms. Default: 15.0 for OpenMX, None
         for SIESTA.
+    splines_for_overlap : dict, optional
+        Two-center spline pool for the overlap calculation. The dict is filled
+        in place; passing the same dict to later calls with the same basis
+        files, Ecut and kdense reuses the cached splines. Default: None (a
+        fresh throwaway pool is created internally).
+    num_workers : int, optional
+        Number of worker threads for spline construction. Default: 1.
 
     Returns
     -------
@@ -172,6 +182,11 @@ def calc_overlap_in_memory(
     from HPRO.utils.structure import Structure
     from HPRO.io.aodata import AOData
     from deepx_dock.CONSTANT import BOHR_TO_ANGSTROM
+
+    if splines_for_overlap is None:
+        splines_for_overlap = {}
+    elif splines_for_overlap:
+        print("[info] Using cached TwoCenterIntgSplines for overlap if possible ...")
 
     aocode = normalize_aocode(aocode)
     if ecut is None:
@@ -187,7 +202,10 @@ def calc_overlap_in_memory(
         efermi=None,
     )
     aodata = AOData(structure, basis_path_root=str(basis_path), aocode=aocode)
-    overlaps = calc_overlap(aodata, Ecut=ecut, kdense=kdense)
+    overlaps = calc_overlap(
+        aodata, Ecut=ecut, kdense=kdense, splines=splines_for_overlap, 
+        num_workers=num_workers,
+    )
 
     if spinful:
         overlaps.spinless_to_spinful()
