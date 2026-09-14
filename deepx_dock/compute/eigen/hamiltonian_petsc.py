@@ -258,8 +258,8 @@ class PETScHamiltonianObj(HamiltonianObj):
         ``1.5 * num_band``), ``fermi_energy_eV`` (default from info.json),
         ``target_band_energy`` (default -0.5, relative to the Fermi level),
         ``maxiter`` (default 300), ``tol`` (default 1e-5), ``purify``
-        (default True), ``init_space`` (default False) and
-        ``same_nonzero_pattern`` (default True).
+        (default True), ``init_space`` (default False), ``share_eps`` (default
+        False) and ``same_nonzero_pattern`` (default True).
 
         Note that the dense Rayleigh-Ritz workspace of the solver scales as
         ``ncv^2`` (replicated on every rank) and the Krylov basis as ``ncv``,
@@ -287,11 +287,12 @@ class PETScHamiltonianObj(HamiltonianObj):
         _tol = kwargs.get("tol", 1e-5)
         _purify = kwargs.get("purify", True)
         _init_space = kwargs.get("init_space", False)
+        _share_eps = kwargs.get("share_eps", False)
         _same_nonzero_pattern = kwargs.get("same_nonzero_pattern", True)
         PETSc.Sys.Print(
             f"Calculation that utilizes PETSc and SLEPc with num_band={_num_band}, dim_subspace={_ncv}, "
             f"target_band_energy={_target_band_energy}, maxiter={_maxiter}, tol={_tol}, purify={_purify}, "
-            f"init_space={_init_space} ...",
+            f"init_space={_init_space}, share_eps={_share_eps}, same_nonzero_pattern={_same_nonzero_pattern} ...",
             flush=True,
         )
         kwargs_now = {
@@ -302,6 +303,7 @@ class PETScHamiltonianObj(HamiltonianObj):
             "tol": _tol,
             "purify": _purify,
             "init_space": _init_space,
+            "share_eps": _share_eps,
             "same_nonzero_pattern": _same_nonzero_pattern,
         }
         return kwargs_now
@@ -333,12 +335,15 @@ class PETScHamiltonianObj(HamiltonianObj):
             ``bands_only=False``.
         """
         kwargs_now = self.parse_diag_kwargs(kwargs)
-        eps = self._initialize_solver(**kwargs_now)
+        if kwargs_now["share_eps"]:
+            eps = self._initialize_solver(**kwargs_now)
         eigvals_list = []
         eigvecs = None
         for ik, k in enumerate(ks):
             PETSc.Sys.Print(f"\n[do] k point {ik + 1}/{len(ks)} ...", flush=True)
             t1 = time.perf_counter()
+            if not kwargs_now["share_eps"]:
+                eps = self._initialize_solver(**kwargs_now)
             result_k = self.diag_one_k(eps, k, bands_only=bands_only, early_reset_ST=(ik == len(ks) - 1), **kwargs_now)
             if bands_only:
                 eigvals_list.append(result_k)
@@ -352,8 +357,11 @@ class PETScHamiltonianObj(HamiltonianObj):
                 )
                 eigvecs[:, :, ik] = block_k
                 del block_k, result_k
+            if not kwargs_now["share_eps"]:
+                eps.destroy()
             PETSc.Sys.Print(f"[done] k point {ik + 1}/{len(ks)}. Total Time: {time.perf_counter() - t1:.2f} sec", flush=True)
-        eps.destroy()
+        if kwargs_now["share_eps"]:
+            eps.destroy()
         self._destroy_work_vecs()
         eigvals = np.stack(eigvals_list, axis=1) # [Nband, Nk]
         if bands_only:

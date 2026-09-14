@@ -91,6 +91,7 @@ def load_poscar_file(file_path):
         "atomic_numbers": atomic_numbers,
         "cart_coords": cart_coords,
         "frac_coords": frac_coords,
+        "atomic_coords": cart_coords,
     }
 
 

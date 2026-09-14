@@ -152,11 +152,9 @@ class PolCalc:
             occupation = obj_H.occupation
         if occupation is None:
             raise ValueError(
-                "occupation is None; provide the total number of electrons explicitly."
+                "occupation is None. Please provide the total number of electrons explicitly."
             )
-        self.n_occ = int(round(float(occupation) / (2 - self.spinful)))
-        if self.n_occ <= 0 or self.n_occ > self.n_bands:
-            raise ValueError(f"Invalid number of occupied bands n_occ={self.n_occ}")
+        self.occupation = occupation
 
     # -------------------------------- setup ----------------------------------
     def _build_tau_cart(self):
@@ -274,20 +272,25 @@ class PolCalc:
         ## eigvals: (Nband, Nk); eigvecs: (Norb, Nband, Nk)
         self.eigvals, eigvecs = self.obj_H.diag(ks, bands_only=False, **diag_kwargs)
 
-        # Metal detection: overlap between HOMO (n_occ-1) and LUMO (n_occ) bands.
-        if self.n_occ >= self.n_bands:
-            # No empty band to define a gap; treat as metallic.
-            self.band_gap = float("nan")
-            self._warn_metal(self.band_gap)
-        else:
-            E_homo = self.eigvals[self.n_occ - 1]  # (Nk,)
-            E_lumo = self.eigvals[self.n_occ]  # (Nk,)
-            gap = float(E_lumo.min() - E_homo.max())
-            self.band_gap = gap
-            if gap <= 1e-4: # LUMO <= HOMO means metal or semi-metal
-                self._warn_metal(gap)
+        n_occ = int(round(float(self.occupation) / (2 - self.spinful)))
+        if n_occ <= 0 or n_occ > self.n_bands:
+            raise ValueError(f"Invalid number of occupied bands n_occ={n_occ}")
 
-        eigvecs_occ = eigvecs[:, :self.n_occ, :]  # (Norb, n_occ, Nk)
+        # Metal detection: overlap between VBM (n_occ-1) and CBM (n_occ) bands.
+        if (not self.spinful) and (int(round(float(self.occupation) % 2)) == 1):
+            gap = 0.0
+        else:
+            E_VBM = self.eigvals[n_occ - 1]  # (Nk,)
+            E_CBM = self.eigvals[n_occ]  # (Nk,)
+            gap = max(float(E_CBM.min() - E_VBM.max()), 0.0)
+        self.band_gap = gap
+        if gap <= 1e-4: # CBM == VBM means metal or semi-metal
+            raise ValueError(
+                f"VBM-CBM gap = {gap:.6f} eV <= 1e-4. "
+                "The system may be metallic; the Berry-phase polarization is ill-defined."
+            )
+
+        eigvecs_occ = eigvecs[:, :n_occ, :]  # (Norb, n_occ, Nk)
         inv_k_idx = self._inverse_k_idx_map(_k_mesh)
 
         ## heavy calculations. needs parallel computing
@@ -296,14 +299,16 @@ class PolCalc:
             n_jobs = os.cpu_count() or 1
         parallel_k = diag_kwargs.get("parallel_k", True)
         n_blas_threads = 1 if parallel_k else n_jobs
+        n_jobs_tot = n_jobs
         n_jobs = n_jobs if parallel_k else 1
         set_num_threads(n_blas_threads)
 
         wccs_frac = np.zeros(3)
         windings = []
         for direction in range(3): # calc polarization along this direction
-            tR = self._build_tR(_k_mesh, direction)
-            tk = self._r2k_complex(tR, ks, self.obj_H.Rijk_list)  # (Nk, Norb, Norb)
+            with threadpoolctl.threadpool_limits(limits=n_jobs_tot, user_api="blas"):
+                tR = self._build_tR(_k_mesh, direction)
+                tk = self._r2k_complex(tR, ks, self.obj_H.Rijk_list)  # (Nk, Norb, Norb)
 
             trans = [(direction + 1) % 3, (direction + 2) % 3]
             na, nb = _k_mesh[trans[0]], _k_mesh[trans[1]]
@@ -379,14 +384,6 @@ class PolCalc:
         ## this is where the factor -1 comes from
         berry_phase = -1.0 * np.angle(dets.prod()) / (2.0 * np.pi)
         return berry_phase
-
-    def _warn_metal(self, gap):
-        import warnings
-
-        warnings.warn(
-            f"HOMO-LUMO gap = {gap:.6f} eV <= 1e-4. "
-            "The system may be metallic; the Berry-phase polarization may be ill-defined."
-        )
 
     def _warn_topological(self, winding, direction, trans):
         import warnings
@@ -484,7 +481,7 @@ class PolCalc:
                 Chern numbers (C_yz, C_zx, C_xy) under the standard
                 right-handed orientation. For spinless systems the value is
                 the total-charge Chern number (2x the per-spin one).
-            band_gap : float  (HOMO-LUMO gap in eV)
+            band_gap : float  (VBM-CBM gap in eV)
         """
         dipole_frac_elec = self.electronic_polarization(k_mesh, **diag_kwargs)
         dipole_frac_ion = self.ionic_polarization()
@@ -548,6 +545,5 @@ class PolCalc:
             print(
                 f"  {labels[a]}   {mucm_ion[a]:+12.6f}   {mucm_elec[a]:+12.6f}   {mucm_total[a]:+12.6f}"
             )
-        print(f"  |P| = {np.linalg.norm(mucm_total):.6f} muC/cm^2\n")
 
         return result
