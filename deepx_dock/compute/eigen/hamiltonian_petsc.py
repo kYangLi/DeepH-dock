@@ -56,7 +56,12 @@ except Exception as e:
     ) from e
 
 from deepx_dock.compute.eigen.hamiltonian import HamiltonianObj
-from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME, EXTREMELY_SMALL_FLOAT
+from deepx_dock.CONSTANT import (
+    DEEPX_HAMILTONIAN_STORAGE_SPINLESS_PLUS_HKB,
+    DEEPX_HKB_FILENAME,
+    DEEPX_OVERLAP_FILENAME,
+    EXTREMELY_SMALL_FLOAT,
+)
 
 
 class PETScHamiltonianObj(HamiltonianObj):
@@ -114,21 +119,55 @@ class PETScHamiltonianObj(HamiltonianObj):
         self.vecs_empty = None
         self._init_space_vecs: list = []
 
+        root_error = None
+        load_error = None
         if self.rank == 0:
-            self._parse_info()
-            self._parse_poscar()
-            self._parse_orbit_types()
-            self.SR_csr = self._construct_csr_matrix(
-                self._read_h5(self.info_dir_path / DEEPX_OVERLAP_FILENAME, dtype=np.float64),
-                matrix_type="overlap"
-            )
-            self.HR_csr = self._construct_csr_matrix(
-                self._read_h5(self.matrix_path, dtype=PETSc.ScalarType if self.spinful else np.float64),
-                matrix_type="hamiltonian",
-            )
-            assert set(self.SR_csr) == set(self.HR_csr), "The R sets of overlap.h5 and hamiltonian.h5 do not match."
-            self.nrows = self.orbits_quantity * (1 + self.spinful)
-            self.ncols = self.nrows
+            try:
+                self._parse_info()
+                self._parse_poscar()
+                self._parse_orbit_types()
+                storage = self._validate_hamiltonian_storage(
+                    {"spinful": self.spinful, "hamiltonian_storage": self.hamiltonian_storage}
+                )
+                overlap_data = self._read_h5(self.info_dir_path / DEEPX_OVERLAP_FILENAME, dtype=np.float64)
+                overlap_pairs = overlap_data[0]
+                overlap_stored_spinful = (
+                    False if storage == DEEPX_HAMILTONIAN_STORAGE_SPINLESS_PLUS_HKB else None
+                )
+                self.SR_csr = self._construct_csr_matrix(
+                    overlap_data,
+                    matrix_type="overlap",
+                    stored_spinful=overlap_stored_spinful,
+                )
+                del overlap_data
+                if storage == DEEPX_HAMILTONIAN_STORAGE_SPINLESS_PLUS_HKB:
+                    hbase_data = self._read_h5(self.matrix_path, dtype=np.float64)
+                    if not np.array_equal(overlap_pairs, hbase_data[0]):
+                        raise ValueError("overlap.h5, hamiltonian.h5 and hkb.h5 must have identical atom_pairs")
+                    hbase_csr = self._construct_csr_matrix(hbase_data, matrix_type="spinless_hamiltonian")
+                    del hbase_data
+
+                    hkb_data = self._read_h5(self.info_dir_path / DEEPX_HKB_FILENAME, dtype=PETSc.ScalarType)
+                    if not np.array_equal(overlap_pairs, hkb_data[0]):
+                        raise ValueError("overlap.h5, hamiltonian.h5 and hkb.h5 must have identical atom_pairs")
+                    self.HR_csr = self._construct_csr_matrix(hkb_data, matrix_type="hamiltonian")
+                    del hkb_data, overlap_pairs
+                    for R, hbase_R in hbase_csr.items():
+                        self.HR_csr[R] += hbase_R
+                    del hbase_csr
+                else:
+                    del overlap_pairs
+                    self.HR_csr = self._construct_csr_matrix(
+                        self._read_h5(self.matrix_path, dtype=PETSc.ScalarType if self.spinful else np.float64),
+                        matrix_type="hamiltonian",
+                    )
+                if set(self.SR_csr) != set(self.HR_csr):
+                    raise ValueError("The R sets of overlap.h5 and hamiltonian.h5 do not match.")
+                self.nrows = self.orbits_quantity * (1 + self.spinful)
+                self.ncols = self.nrows
+            except Exception as error:
+                root_error = error
+                load_error = f"{type(error).__module__}.{type(error).__qualname__}: {error}"
         else:
             self.reciprocal_lattice = None
             self.spinful = None
@@ -137,6 +176,12 @@ class PETScHamiltonianObj(HamiltonianObj):
             self.orbits_quantity = None
             self.nrows = None
             self.ncols = None
+
+        load_error = self.comm.bcast(load_error, root=0)
+        if load_error is not None:
+            if root_error is not None:
+                raise root_error
+            raise RuntimeError(f"Rank 0 failed to load DeepH matrices: {load_error}")
 
         self.reciprocal_lattice = self.comm.bcast(self.reciprocal_lattice, root=0)
         self.spinful = self.comm.bcast(self.spinful, root=0)
@@ -148,7 +193,10 @@ class PETScHamiltonianObj(HamiltonianObj):
         self.comm.barrier()
 
     def _construct_csr_matrix(
-        self, obs_tuple: tuple[np.ndarray, ...], matrix_type: str
+        self,
+        obs_tuple: tuple[np.ndarray, ...],
+        matrix_type: str,
+        stored_spinful: bool | None = None,
     ) -> dict[tuple[int, int, int], csr_matrix]:
         """
         Assemble a DeepH-format observable into per-R CSR sparse matrices.
@@ -164,11 +212,13 @@ class PETScHamiltonianObj(HamiltonianObj):
             chunk_shapes, entries)`` as returned by
             :meth:`~deepx_dock.compute.eigen.matrix_obj.AOMatrixObj._read_h5`.
         matrix_type : str
-            Type of the matrix. For "overlap", the spinless blocks are
-            expanded into [[S,0],[0,S]] when the system is spinful. For
-            "hamiltonian" of a spinful system, the stored blocks contain the
-            full spin structure (shape ``(2*n_i, 2*n_j)``) and are scattered
-            into the four spin quadrants.
+            Type of the matrix. Scalar "overlap" and
+            "spinless_hamiltonian" blocks are expanded into
+            ``[[M,0],[0,M]]`` when the system is spinful. A full spinful
+            overlap or Hamiltonian is scattered into four spin quadrants.
+        stored_spinful : bool, optional
+            Explicit overlap storage dimension. ``None`` infers it from all
+            overlap block shapes. Split-HKB callers pass ``False`` strictly.
 
         Returns
         -------
@@ -177,8 +227,26 @@ class PETScHamiltonianObj(HamiltonianObj):
             ``PETSc.ScalarType``.
         """
 
+        if matrix_type not in ("overlap", "hamiltonian", "spinless_hamiltonian"):
+            raise ValueError(f"Invalid matrix_type: {matrix_type}")
         atom_pairs, chunk_boundaries, chunk_shapes, entries = obs_tuple
-        need_expand_spin = (matrix_type in ["overlap",]) and self.spinful
+        if matrix_type == "overlap":
+            if stored_spinful is None:
+                stored_spinful = self._infer_overlap_storage(
+                    atom_pairs,
+                    chunk_shapes,
+                    self.atom_num_orbits,
+                    self.spinful,
+                )
+            elif stored_spinful and not self.spinful:
+                raise ValueError("A spinless system cannot store a spinful overlap")
+        else:
+            stored_spinful = matrix_type == "hamiltonian" and self.spinful
+        need_expand_spin = (
+            matrix_type in ("overlap", "spinless_hamiltonian")
+            and self.spinful
+            and not stored_spinful
+        )
 
         n_orb = self.orbits_quantity
         matrix_dim = n_orb * (1 + self.spinful)
@@ -191,16 +259,22 @@ class PETScHamiltonianObj(HamiltonianObj):
         for i_ap in range(atom_pairs.shape[0]):
             R = tuple(int(v) for v in atom_pairs[i_ap, :3])
             ia, ja = int(atom_pairs[i_ap, 3]), int(atom_pairs[i_ap, 4])
-            block = entries[chunk_boundaries[i_ap] : chunk_boundaries[i_ap + 1]].reshape(chunk_shapes[i_ap])
-            nz_r, nz_c = np.nonzero(np.abs(block) > small_value)
-            if nz_r.size == 0:
-                continue
-            vals = block[nz_r, nz_c].astype(PETSc.ScalarType)
-
             i0 = int(self.atom_num_orbits_cumsum[ia])
             j0 = int(self.atom_num_orbits_cumsum[ja])
             n_i = int(self.atom_num_orbits[ia])
             n_j = int(self.atom_num_orbits[ja])
+            stored_spin_factor = 2 if stored_spinful else 1
+            expected_shape = (stored_spin_factor * n_i, stored_spin_factor * n_j)
+            stored_shape = tuple(int(value) for value in chunk_shapes[i_ap])
+            if stored_shape != expected_shape:
+                raise ValueError(
+                    f"Matrix block {i_ap} has shape {stored_shape}; expected {expected_shape} for {matrix_type}"
+                )
+            block = entries[chunk_boundaries[i_ap] : chunk_boundaries[i_ap + 1]].reshape(stored_shape)
+            nz_r, nz_c = np.nonzero(np.abs(block) > small_value)
+            if nz_r.size == 0:
+                continue
+            vals = block[nz_r, nz_c].astype(PETSc.ScalarType)
 
             if not self.spinful:  # mat -> mat
                 global_rows = i0 + nz_r

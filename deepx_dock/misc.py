@@ -5,7 +5,11 @@ from typing import Callable, List, Any
 from pathlib import Path
 import os
 
-from deepx_dock.CONSTANT import PERIODIC_TABLE_SYMBOL_TO_INDEX
+from deepx_dock.CONSTANT import (
+    DEEPX_HAMILTONIAN_STORAGE_SPINLESS_PLUS_HKB,
+    DEEPX_INFO_FILENAME,
+    PERIODIC_TABLE_SYMBOL_TO_INDEX,
+)
 
 # ==============================================================================
 # Basic
@@ -18,6 +22,40 @@ def load_json_file(file_path):
 def dump_json_file(file_path, dict_content):
     with open(file_path, "w") as f:
         json.dump(dict_content, f)
+
+
+def parse_hamiltonian_storage(info_dict: dict) -> str | None:
+    """Validate split-HKB metadata and return the normalized internal mode."""
+    split_hkb = info_dict.get("split_hkb")
+    if "split_hkb" in info_dict and type(split_hkb) is not bool:
+        raise ValueError("info.json split_hkb must be true or false")
+
+    storage = info_dict.get("hamiltonian_storage")
+    if storage not in (None, "full", DEEPX_HAMILTONIAN_STORAGE_SPINLESS_PLUS_HKB):
+        raise ValueError(f"Unknown Hamiltonian storage: {storage}")
+    legacy_split_hkb = storage == DEEPX_HAMILTONIAN_STORAGE_SPINLESS_PLUS_HKB
+    if "split_hkb" in info_dict and "hamiltonian_storage" in info_dict:
+        if split_hkb != legacy_split_hkb:
+            raise ValueError("Conflicting split-HKB metadata in info.json")
+
+    effective_split_hkb = legacy_split_hkb if split_hkb is None else split_hkb
+    if effective_split_hkb and not info_dict.get("spinful", False):
+        raise ValueError("split_hkb=true requires info.json spinful=true")
+    if effective_split_hkb:
+        return DEEPX_HAMILTONIAN_STORAGE_SPINLESS_PLUS_HKB
+    return "full" if storage == "full" else None
+
+
+def require_full_hamiltonian_storage(data_dir: str | Path, operation: str) -> None:
+    """Reject split Hamiltonian storage for operations that read only the full-H file."""
+    info_path = Path(data_dir) / DEEPX_INFO_FILENAME
+    storage = parse_hamiltonian_storage(load_json_file(info_path))
+    if storage == DEEPX_HAMILTONIAN_STORAGE_SPINLESS_PLUS_HKB:
+        raise ValueError(
+            f"{operation} requires a full Hamiltonian in hamiltonian.h5, but {info_path} declares "
+            "split_hkb=true. Reading hamiltonian.h5 alone would omit hkb.h5; "
+            "use a split-aware loader or reconstruct the full Hamiltonian first."
+        )
 
 
 def load_toml_file(file_path):
@@ -161,4 +199,3 @@ def list_A_contained_B(A: List[Any], B: List[Any]) -> bool:
     cA = Counter(A)
     cB = Counter(B)
     return all(cB[key] <= cA[key] for key in cB)
-

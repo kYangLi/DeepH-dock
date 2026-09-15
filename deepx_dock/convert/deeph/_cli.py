@@ -194,8 +194,6 @@ def translate_new_to_old(
         raise click.ClickException(f"The updated data path '{updated_dir}' does not exist or is not a directory!")
     if (not force) and legacy_dir.exists():
         click.confirm(f"The legacy data path '{legacy_dir}' already exists. Continue?", abort=True)
-    else:
-        legacy_dir.mkdir(parents=True, exist_ok=True)
     #
     from deepx_dock.convert.deeph.translate_old_dataset_to_new import OldDatasetTranslator
 

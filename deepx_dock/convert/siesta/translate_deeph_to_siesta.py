@@ -20,6 +20,7 @@ from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
 from deepx_dock.CONSTANT import DEEPX_DENSITY_MATRIX_FILENAME
 from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME
 from deepx_dock.CONSTANT import SIESTA_HSX_FILENAME, SIESTA_DM_FILENAME
+from deepx_dock.misc import require_full_hamiltonian_storage
 
 HARTREE_TO_EV = 27.211386024367243
 BOHR_TO_ANGSTROM = 0.529177210903 # siesta
@@ -812,13 +813,14 @@ def transfer_one_deeph_to_siesta(dir_name, siesta_path, deeph_path, basis_path, 
         basis_path (str): The basis set root directory containing .ion files.
         is_pred (bool): When set to True, convert the file 'hamiltonian_pred.h5', otherwise convert 'hamiltonian.h5'.
     """
+    dir_name = str(dir_name)
+    siesta_path = Path(siesta_path)
+    deeph_path = Path(deeph_path)
+    deeph_dir_path = deeph_path / dir_name
+    if not deeph_dir_path.is_dir():
+        return
+    require_full_hamiltonian_storage(deeph_dir_path, "DeepH-to-SIESTA conversion")
     try:
-        dir_name = str(dir_name)
-        siesta_path = Path(siesta_path)
-        deeph_path = Path(deeph_path)
-        deeph_dir_path = deeph_path / dir_name
-        if not deeph_dir_path.is_dir():
-            return
         siesta_dir_path = siesta_path / dir_name
         siesta_dir_path.mkdir(parents=True, exist_ok=True)
         

@@ -14,7 +14,7 @@ from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME, DEEPX_INFO_FILENAME
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
 from deepx_dock.CONSTANT import DEEPX_PREDICT_HAMILTONIAN_FILENAME
 from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
-from deepx_dock.misc import get_data_dir_lister
+from deepx_dock.misc import get_data_dir_lister, require_full_hamiltonian_storage
 
 FILES_NECESSARY = set([DEEPX_HAMILTONIAN_FILENAME,])
 
@@ -60,10 +60,14 @@ class SingleAtomHamiltonianHandler:
         self.n_tier = n_tier
 
     def transfer_all(self):
-        elements_quantities = self.get_elements_quantities(self.single_atoms_dir)
-        data_dir_lister = get_data_dir_lister(
+        data_dirs = list(get_data_dir_lister(
             self.input_dir, self.n_tier, validation_check_H
-        )
+        ))
+        for dir_name in data_dirs:
+            require_full_hamiltonian_storage(
+                Path(self.input_dir) / dir_name, "single-atom Hamiltonian correction"
+            )
+        elements_quantities = self.get_elements_quantities(self.single_atoms_dir)
         worker = partial(
             self.transfer_one,
             input_dir=self.input_dir,
@@ -73,7 +77,7 @@ class SingleAtomHamiltonianHandler:
             copy_other_files=self.copy_other_files,
             backward=self.backward,
         )
-        parallel_map(worker, data_dir_lister, n_jobs=self.n_jobs, desc="Data")
+        parallel_map(worker, data_dirs, n_jobs=self.n_jobs, desc="Data")
 
     @staticmethod
     def get_elements_quantities(single_atoms_dir: str | Path):
@@ -83,6 +87,9 @@ class SingleAtomHamiltonianHandler:
         assert len(element_dirs) > 0, f"No element subdirectories found in {single_atoms_dir} !"
         quantities = {}
         for element_dir in element_dirs:
+            require_full_hamiltonian_storage(
+                element_dir, "single-atom Hamiltonian reference loading"
+            )
             ele = element_dir.name
             with open(element_dir/DEEPX_INFO_FILENAME, 'r') as f0:
                 json_data = json.load(f0)
@@ -116,11 +123,12 @@ class SingleAtomHamiltonianHandler:
         dir_name, input_dir, output_dir, elements_quantities,
         transform_offsite_blocks, copy_other_files, backward,
     ):
+        input_dir = Path(input_dir)
+        output_dir = Path(output_dir)
+        dir_name = str(dir_name)
+        input_dir_path = input_dir / dir_name
+        require_full_hamiltonian_storage(input_dir_path, "single-atom Hamiltonian correction")
         try:
-            input_dir = Path(input_dir)
-            output_dir = Path(output_dir)
-            dir_name = str(dir_name)
-            input_dir_path = input_dir / dir_name
             output_dir_path = output_dir / dir_name
             #
             output_dir_path.mkdir(parents=True, exist_ok=True)

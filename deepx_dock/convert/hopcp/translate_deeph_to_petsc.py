@@ -17,7 +17,7 @@ from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME, DEEPX_INFO_FILENAME
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
 from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
 from deepx_dock.CONSTANT import EXTREMELY_SMALL_FLOAT
-from deepx_dock.misc import get_data_dir_lister
+from deepx_dock.misc import get_data_dir_lister, require_full_hamiltonian_storage
 
 DEEPX_NECESSARY_FILES = {DEEPX_POSCAR_FILENAME, DEEPX_INFO_FILENAME}
 
@@ -41,7 +41,6 @@ class DeepHtoPETScTranslator:
         self.n_jobs = n_jobs
         self.n_tier = n_tier
         assert self.deeph_dir.is_dir(), f"{deeph_dir} is not a directory"
-        self.petsc_dir.mkdir(parents=True, exist_ok=True)
 
     def transfer_all_deeph_to_petsc(self):
         worker = partial(
@@ -51,8 +50,14 @@ class DeepHtoPETScTranslator:
             export_S=self.export_S,
             export_H=self.export_H,
         )
-        data_dir_lister = get_data_dir_lister(self.deeph_dir, self.n_tier, validation_check_deeph)
-        parallel_map(worker, data_dir_lister, n_jobs=self.n_jobs, desc="Data")
+        data_dirs = list(get_data_dir_lister(self.deeph_dir, self.n_tier, validation_check_deeph))
+        if self.export_H:
+            for dir_name in data_dirs:
+                require_full_hamiltonian_storage(
+                    self.deeph_dir / dir_name, "DeepH-to-PETSc conversion"
+                )
+        self.petsc_dir.mkdir(parents=True, exist_ok=True)
+        parallel_map(worker, data_dirs, n_jobs=self.n_jobs, desc="Data")
 
     @staticmethod
     def transfer_one_deeph_to_petsc(dir_name: str, deeph_path: Path, petsc_path: Path, export_S=True, export_H=True):
@@ -60,6 +65,8 @@ class DeepHtoPETScTranslator:
             deeh_dir_path = deeph_path / dir_name
             if not deeh_dir_path.is_dir():
                 return
+            if export_H:
+                require_full_hamiltonian_storage(deeh_dir_path, "DeepH-to-PETSc conversion")
             petsc_dir_path = petsc_path / dir_name
             petsc_dir_path.mkdir(parents=True, exist_ok=True)
             #
@@ -75,6 +82,8 @@ class PETScWriter:
         self.petsc_path = Path(petsc_path)
 
     def dump_data(self, export_S=True, export_H=True):
+        if export_H:
+            require_full_hamiltonian_storage(self.deeph_path, "DeepH-to-PETSc conversion")
         self._read_poscar()
         self._read_info()
         self.R_set = None

@@ -15,6 +15,7 @@ dft
   │   ├── info.json
   │   ├── overlap.h5
   │   ├── hamiltonian.h5     (optional)
+  │   ├── hkb.h5             (optional, split SOC storage)
   │   ├── density_matrix.h5  (optional)
   │   ├── wavefunction_ao.h5 (optional)
   │   ├── potential_r.h5     (optional)
@@ -36,6 +37,7 @@ dft
 | `info.json` | Required | JSON | System metadata and basis set info |
 | `overlap.h5` | Required | HDF5 | Overlap matrix (S) in sparse AO basis |
 | `hamiltonian.h5` | Optional | HDF5 | Hamiltonian matrix (H) |
+| `hkb.h5` | Optional | HDF5 | Full-spin Kleinman-Bylander component for split SOC storage |
 | `density_matrix.h5` | Optional | HDF5 | Density matrix |
 | `wavefunction_ao.h5` | Optional | HDF5 | Band eigenvalues and wavefunction coefficients in the AO basis |
 | `potential_r.h5` | Optional | HDF5 | Real-space potential matrix |
@@ -109,6 +111,7 @@ DeepH uses HDF5 files to store atom-pair-resolved electronic structure propertie
 
 * `overlap.h5` - Overlap matrices
 * `hamiltonian.h5` - Hamiltonian matrices
+* `hkb.h5` - Kleinman-Bylander Hamiltonian component in split SOC storage
 * `density_matrix.h5` - Density matrices
 
 #### Component Descriptions
@@ -120,7 +123,7 @@ Each HDF5 file contains the following keys:
 | `atom_pairs` | (N, 5) | Integer matrix where N is the number of edges. Each row contains 5 integers: `[R1, R2, R3, i_atom, j_atom]`, representing a coupling between the $i$-th atom in the central unit cell and the $j$-th atom in the periodic image cell specified by the lattice vector indices $(i, j, k)$.  |
 | `chunk_boundaries` | (N+1,) | 1D integer array marking boundaries for each edge's data in the entries array |
 | `chunk_shapes` | (N, 2) | Integer matrix where each row gives the shape of the submatrix for the corresponding edge |
-| `entries` | (M,) | Flattened 1D array of floating-point values containing all matrix elements |
+| `entries` | (M,) | Flattened 1D array of real or complex values containing all matrix elements |
 
 1. **`atom_pairs`**
    * Shape: `N_edge × 5` array
@@ -140,9 +143,9 @@ Each HDF5 file contains the following keys:
    * Shape: `N_edge × 2` array
    * Records shapes of each block
 
-#### Spin-Polarized Systems
+#### Spinful Systems
 
-For systems with `spinful=true`:
+For systems with `spinful=true` and conventional full Hamiltonian storage:
 
 * `overlap.h5` remains unchanged
 * `hamiltonian.h5` and `density_matrix.h5` expand to include spin
@@ -159,6 +162,50 @@ A_{i,j,R,\downarrow,\uparrow} & A_{i,j,R,\downarrow,\downarrow}
 $$
 
 Each sub-block maintains the same size as in the non-spinful case.
+
+#### Split KB Hamiltonian Storage
+
+For a nonmagnetic SOC calculation with fully relativistic norm-conserving
+pseudopotentials, `info.json` may contain:
+
+```json
+"spinful": true,
+"split_hkb": true
+```
+
+In this representation, `overlap.h5` stores the spinless overlap $S_0$,
+`hamiltonian.h5` stores the spinless base Hamiltonian
+$H_0=T+V_{\mathrm{SC}}$, and `hkb.h5` stores the full spinful
+Kleinman-Bylander contribution, including both its spin-scalar and SOC
+parts. The physical matrices are reconstructed as
+
+$$
+S=I_2\otimes S_0,\qquad H=I_2\otimes H_0+H_{\mathrm{KB}}.
+$$
+
+The overlap and base-Hamiltonian blocks have shape $n_i\times n_j$;
+the HKB blocks have shape $2n_i\times2n_j$. With `"split_hkb": false`,
+`hamiltonian.h5` keeps the complete legacy Hamiltonian. Older data that omit
+the key remain in the legacy format: their existing `spinful` value continues
+to determine whether the complete matrices contain the spin degree of freedom.
+The former `hamiltonian_storage` string is accepted only as a
+backward-compatible input alias and is no longer written.
+For legacy/full spinful data, the loader accepts both overlap conventions
+already present in the ecosystem: scalar $n_i\times n_j$ blocks and explicit
+spin-diagonal $2n_i\times2n_j$ blocks. It infers one consistent convention
+from all block shapes. Split-HKB data remain strict and require scalar overlap
+blocks.
+The canonical `HamiltonianObj` and `PETScHamiltonianObj` loaders reconstruct
+the full physical matrices before diagonalization. `AOMatrixObj` can load the
+two raw Hamiltonian components with `matrix_type="hamiltonian"` and
+`matrix_type="hkb"`, respectively.
+
+Converters and analyzers that still require one complete physical
+`hamiltonian.h5` fail before writing output when this split schema is present.
+This currently includes the HOPCP/PETSc and OpenMX exporters, legacy-format
+downgrade, Hamiltonian standardization, single-atom core correction,
+DeepH-to-SIESTA conversion, and Hamiltonian error analysis. Reconstruct a full
+Hamiltonian with a canonical loader before using one of those routes.
 
 **Important Note:** The `atom_pairs` array must be identical across all `*.h5` files within the same directory.
 

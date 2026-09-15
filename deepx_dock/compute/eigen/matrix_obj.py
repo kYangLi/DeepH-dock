@@ -12,11 +12,13 @@ import threadpoolctl
 import numpy as np
 
 from deepx_dock.parallel import parallel_map
-from deepx_dock.misc import load_json_file, load_poscar_file
+from deepx_dock.misc import load_json_file, load_poscar_file, parse_hamiltonian_storage
 from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME
 from deepx_dock.CONSTANT import DEEPX_INFO_FILENAME
 from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
+from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_STORAGE_SPINLESS_PLUS_HKB
+from deepx_dock.CONSTANT import DEEPX_HKB_FILENAME
 from deepx_dock.CONSTANT import DEEPX_DENSITY_MATRIX_FILENAME
 from deepx_dock.CONSTANT import PERIODIC_TABLE_INDEX_TO_SYMBOL
 
@@ -124,12 +126,19 @@ class AOMatrixObj:
         Path to the matrix file. Default: hamiltonian.h5 under `info_dir_path`.
 
     matrix_type : str, optional
-        Type of the matrix. Options: "hamiltonian", "overlap", "density_matrix".
+        Type of the matrix. Options: "hamiltonian", "hkb", "overlap", "density_matrix".
         Default: "hamiltonian".
 
     mats : np.ndarray, shape (N_R, N_b, N_b), optional
         Matrix in real space. If provided, the object will not load the matrix
         from the file. The R-vectors MUST be sorted to avoid bugs.
+
+    stored_spinful : bool, optional
+        Whether an input file explicitly stores spinor blocks. The default
+        follows ``info.json["split_hkb"]`` for split H/HKB components and
+        ``info.json["spinful"]`` for a full Hamiltonian. Legacy overlap files
+        are inferred from their block shapes because both scalar and expanded
+        spin storage exist in the ecosystem.
 
     Properties
     ----------
@@ -161,8 +170,9 @@ class AOMatrixObj:
         Fermi energy in eV.
     """
 
-    def __init__(self, info_dir_path, matrix_file_path=None, matrix_type="hamiltonian", mats=None):
+    def __init__(self, info_dir_path, matrix_file_path=None, matrix_type="hamiltonian", mats=None, stored_spinful=None):
         self._get_necessary_data_path(info_dir_path, matrix_file_path, matrix_type)
+        self.stored_spinful = stored_spinful
 
         self.mats = None
         self.Rijk_list = None
@@ -251,16 +261,17 @@ class AOMatrixObj:
         return obj
 
     @classmethod
-    def from_data(cls, structure_dict, info_dict, matrix_data, matrix_type="hamiltonian"):
+    def from_data(cls, structure_dict, info_dict, matrix_data, matrix_type="hamiltonian", stored_spinful=None):
         """
         Construct an AOMatrixObj from in-memory DeepH-format data.
 
         This factory bypasses file I/O entirely; all path attributes of the
         returned object are ``None``.
 
-        For ``matrix_type="overlap"`` the input must always be **spinless**,
-        and it will be expanded to ``[[S,0],[0,S]]`` when
-        ``info_dict["spinful"]=True``.
+        For ``matrix_type="overlap"``, legacy/full input may be scalar or
+        explicitly spin-expanded; block shapes select the representation.
+        Split-HKB input must be scalar and is expanded to
+        ``[[S,0],[0,S]]`` when ``info_dict["spinful"]=True``.
         When generating the info and overlap with
         :func:`deepx_dock.compute.overlap.calc_overlap_in_memory`, call it
         with ``spinful=False`` and modify ``info_dict["spinful"]`` manually.
@@ -287,7 +298,8 @@ class AOMatrixObj:
             ``chunk_boundaries`` (N+1,),
             ``entries`` (flattened).
         matrix_type : str, optional
-            "hamiltonian", "overlap", or "density_matrix". Default: "hamiltonian".
+            "hamiltonian", "hkb", "overlap", or "density_matrix".
+            Default: "hamiltonian".
 
         Returns
         -------
@@ -299,9 +311,11 @@ class AOMatrixObj:
         obj.poscar_path = None
         obj.info_json_path = None
         obj.matrix_path = None
+        obj.stored_spinful = stored_spinful
 
         obj._apply_structure_data(structure_dict)
         obj._apply_info_data(info_dict)
+        obj._resolve_stored_spinful(matrix_type)
         obj._parse_orbit_types()
 
         atom_pairs = np.asarray(matrix_data["atom_pairs"])
@@ -313,6 +327,15 @@ class AOMatrixObj:
         obj.bounds = chunk_boundaries
         obj.shapes = chunk_shapes
 
+        if matrix_type == "overlap" and obj.stored_spinful is None:
+            obj.stored_spinful = cls._infer_overlap_storage(
+                atom_pairs,
+                chunk_shapes,
+                obj.atom_num_orbits,
+                obj.spinful,
+            )
+
+        assembly_type = "hamiltonian" if matrix_type == "hkb" else matrix_type
         obj.Rijk_list, obj.mats = cls._assemble_matrix_from_deeph_data(
             atom_pairs,
             chunk_boundaries,
@@ -320,7 +343,8 @@ class AOMatrixObj:
             entries,
             obj.atom_num_orbits,
             obj.spinful,
-            matrix_type=matrix_type,
+            matrix_type=assembly_type,
+            stored_spinful=obj.stored_spinful,
         )
         obj._sort_Rijk()
         return obj
@@ -341,6 +365,8 @@ class AOMatrixObj:
         else:
             if matrix_type == "hamiltonian":
                 self.matrix_path = info_dir_path / DEEPX_HAMILTONIAN_FILENAME
+            elif matrix_type == "hkb":
+                self.matrix_path = info_dir_path / DEEPX_HKB_FILENAME
             elif matrix_type == "overlap":
                 self.matrix_path = info_dir_path / DEEPX_OVERLAP_FILENAME
             elif matrix_type == "density_matrix":
@@ -352,17 +378,48 @@ class AOMatrixObj:
         """Parse all necessary data from files."""
         self._parse_info()
         self._parse_poscar()
+        self._resolve_stored_spinful(matrix_type)
         self._parse_orbit_types()
 
         if Rijk_only:
-            self._parse_matrix_S_like(Rijk_only=True)
+            self._parse_matrix_S_like(Rijk_only=True, matrix_type=matrix_type)
         else:
-            if matrix_type in ("hamiltonian", "density_matrix"):
+            if matrix_type in ("hamiltonian", "hkb", "density_matrix"):
                 self._parse_matrix_H_like()
             elif matrix_type == "overlap":
                 self._parse_matrix_S_like()
             else:
                 raise ValueError(f"Unknown matrix type: {matrix_type}")
+
+    def _resolve_stored_spinful(self, matrix_type):
+        storage = parse_hamiltonian_storage(
+            {"hamiltonian_storage": self.hamiltonian_storage, "spinful": self.spinful}
+        )
+        if matrix_type == "overlap":
+            if storage == DEEPX_HAMILTONIAN_STORAGE_SPINLESS_PLUS_HKB:
+                if self.stored_spinful not in (None, False):
+                    raise ValueError("split-HKB overlap.h5 must use spinless storage")
+                self.stored_spinful = False
+            elif self.stored_spinful is not None:
+                self.stored_spinful = bool(self.stored_spinful)
+                if self.stored_spinful and not self.spinful:
+                    raise ValueError("A spinless system cannot store a spinful overlap")
+        elif matrix_type == "hkb":
+            if storage != DEEPX_HAMILTONIAN_STORAGE_SPINLESS_PLUS_HKB:
+                raise ValueError("hkb matrix_type requires split_hkb=true")
+            if self.stored_spinful not in (None, True):
+                raise ValueError("hkb.h5 must use spinful storage")
+            self.stored_spinful = True
+        elif (
+            matrix_type == "hamiltonian"
+            and storage == DEEPX_HAMILTONIAN_STORAGE_SPINLESS_PLUS_HKB
+            and self.stored_spinful is None
+        ):
+            self.stored_spinful = False
+        elif self.stored_spinful is None:
+            self.stored_spinful = self.spinful
+        else:
+            self.stored_spinful = bool(self.stored_spinful)
 
     def _parse_info(self):
         """Parse info.json file."""
@@ -372,6 +429,7 @@ class AOMatrixObj:
         self.orbits_quantity = raw_info["orbits_quantity"]
         self.is_orthogonal_basis = raw_info["orthogonal_basis"]
         self.spinful = raw_info["spinful"]
+        self.hamiltonian_storage = parse_hamiltonian_storage(raw_info)
         self.fermi_energy = raw_info["fermi_energy_eV"]
         self.elements_orbital_map = raw_info["elements_orbital_map"]
         self.occupation = raw_info.get("occupation", None)
@@ -438,6 +496,7 @@ class AOMatrixObj:
         assert "spinful" in info_dict, "info_dict must contain 'spinful'"
         assert "elements_orbital_map" in info_dict, "info_dict must contain 'elements_orbital_map'"
         self.spinful = bool(info_dict["spinful"])
+        self.hamiltonian_storage = parse_hamiltonian_storage(info_dict)
         self.elements_orbital_map = info_dict["elements_orbital_map"]
 
         self.is_orthogonal_basis = bool(info_dict.get("orthogonal_basis", False))
@@ -471,14 +530,16 @@ class AOMatrixObj:
         spinful,
         matrix_type="hamiltonian",
         Rijk_only=False,
+        stored_spinful=None,
     ):
         """
         Assemble (Rijk_list, mats) from DeepH-format HDF5 arrays.
 
-        Note that for ``matrix_type="overlap"``, input must always be
-        **spinless**, and it will be expanded to ``[[S, 0], [0, S]]`` in this
-        function when ``spinful=True``.
-        For other ``matrix_type``, input should match the ``spinful`` flag.
+        A legacy/full ``matrix_type="overlap"`` input may contain either
+        scalar blocks or explicitly expanded spin blocks. Scalar overlap is
+        expanded to ``[[S, 0], [0, S]]`` when ``spinful=True``. Split-HKB
+        metadata resolves ``stored_spinful=False`` before this function.
+        For other ``matrix_type``, input should match ``stored_spinful``.
 
         Parameters
         ----------
@@ -493,12 +554,16 @@ class AOMatrixObj:
         atom_num_orbits : list[int] or np.ndarray
             Orbital count of each atom (spinless).
         spinful : bool
-            Whether the output includes spin DOF.
+            Whether the physical system includes spin DOF.
         matrix_type : str
             "hamiltonian"/"density_matrix" (H-like) or "overlap" (S-like).
         Rijk_only : bool
             If True, only compute the unique R-vectors and return
             ``(Rijk_list, None)`` without assembling matrices.
+        stored_spinful : bool, optional
+            Whether a component explicitly stores spinor blocks. Overlap
+            storage is inferred from ``chunk_shapes`` when this is ``None``.
+            H-like storage defaults to ``spinful``.
 
         Returns
         -------
@@ -522,12 +587,25 @@ class AOMatrixObj:
         if Rijk_only:
             return Rijk_list, None
 
+        if stored_spinful is None:
+            if is_overlap:
+                stored_spinful = AOMatrixObj._infer_overlap_storage(
+                    atom_pairs,
+                    chunk_shapes,
+                    atom_num_orbits,
+                    spinful,
+                )
+            else:
+                stored_spinful = spinful
+        if stored_spinful and not spinful:
+            raise ValueError("A spinless system cannot store spinful matrix blocks")
+
         if is_overlap:
             dtype = np.float64
-            spin_factor = 1
+            spin_factor = 1 + stored_spinful
         else:
-            dtype = np.complex128 if spinful else np.float64
-            spin_factor = 1 + spinful
+            dtype = np.complex128 if stored_spinful else np.float64
+            spin_factor = 1 + stored_spinful
 
         entries = np.asarray(entries, dtype=dtype)
         atom_num_orbits = np.asarray(atom_num_orbits, dtype=int)
@@ -541,16 +619,23 @@ class AOMatrixObj:
         for i_ap, ap in enumerate(atom_pairs):
             i_R = R_to_idx[(int(ap[0]), int(ap[1]), int(ap[2]))]
             i_atom, j_atom = int(ap[3]), int(ap[4])
-            chunk = entries[chunk_boundaries[i_ap] : chunk_boundaries[i_ap + 1]].reshape(chunk_shapes[i_ap])
+            n_i = int(atom_num_orbits[i_atom])
+            n_j = int(atom_num_orbits[j_atom])
+            block_spin_factor = spin_factor
+            expected_shape = (block_spin_factor * n_i, block_spin_factor * n_j)
+            stored_shape = tuple(int(value) for value in chunk_shapes[i_ap])
+            if stored_shape != expected_shape:
+                raise ValueError(
+                    f"Matrix block {i_ap} has shape {stored_shape}; expected {expected_shape} for {matrix_type}"
+                )
+            chunk = entries[chunk_boundaries[i_ap] : chunk_boundaries[i_ap + 1]].reshape(stored_shape)
 
             i_sl_u = slice(cumsum[i_atom], cumsum[i_atom + 1])
             j_sl_u = slice(cumsum[j_atom], cumsum[j_atom + 1])
 
-            if is_overlap or not spinful:
+            if not stored_spinful:
                 mats[i_R][i_sl_u, j_sl_u] = chunk
             else:
-                n_i = int(atom_num_orbits[i_atom])
-                n_j = int(atom_num_orbits[j_atom])
                 i_sl_d = slice(cumsum[i_atom] + orbits_quantity, cumsum[i_atom + 1] + orbits_quantity)
                 j_sl_d = slice(cumsum[j_atom] + orbits_quantity, cumsum[j_atom + 1] + orbits_quantity)
                 mats[i_R][i_sl_u, j_sl_u] = chunk[:n_i, :n_j]
@@ -558,14 +643,14 @@ class AOMatrixObj:
                 mats[i_R][i_sl_d, j_sl_u] = chunk[n_i:, :n_j]
                 mats[i_R][i_sl_d, j_sl_d] = chunk[n_i:, n_j:]
 
-        if is_overlap and spinful:
+        if is_overlap and spinful and not stored_spinful:
             _zeros = np.zeros_like(mats)
             mats = np.block([[mats, _zeros], [_zeros, mats]])
 
         return Rijk_list, mats
 
-    def _parse_matrix_S_like(self, Rijk_only=False):
-        """Parse overlap-like matrix (real values, no spin structure)."""
+    def _parse_matrix_S_like(self, Rijk_only=False, matrix_type="overlap"):
+        """Parse overlap-like matrices in scalar or legacy spin-expanded storage."""
         if not Rijk_only:
             matrix_path = self.matrix_path
         else:
@@ -576,6 +661,27 @@ class AOMatrixObj:
         self.bounds = bounds
         self.shapes = shapes
 
+        inferred_storage = self._infer_overlap_storage(
+            atom_pairs,
+            shapes,
+            self.atom_num_orbits,
+            self.spinful,
+        )
+        if matrix_type == "overlap":
+            if self.stored_spinful is None:
+                self.stored_spinful = inferred_storage
+            elif self.stored_spinful != inferred_storage:
+                expected = "spin-expanded" if self.stored_spinful else "scalar"
+                raise ValueError(f"overlap.h5 metadata requires consistently {expected} blocks")
+            overlap_stored_spinful = self.stored_spinful
+        else:
+            if (
+                self.hamiltonian_storage == DEEPX_HAMILTONIAN_STORAGE_SPINLESS_PLUS_HKB
+                and inferred_storage
+            ):
+                raise ValueError("split-HKB overlap.h5 must use spinless storage")
+            overlap_stored_spinful = inferred_storage
+
         self.Rijk_list, mats = self._assemble_matrix_from_deeph_data(
             atom_pairs,
             bounds,
@@ -585,13 +691,34 @@ class AOMatrixObj:
             self.spinful,
             matrix_type="overlap",
             Rijk_only=Rijk_only,
+            stored_spinful=overlap_stored_spinful,
         )
         if not Rijk_only:
             self.mats = mats
 
+    @staticmethod
+    def _infer_overlap_storage(atom_pairs, chunk_shapes, atom_num_orbits, spinful):
+        """Infer whether every overlap block is scalar or spin-expanded."""
+        scalar_storage = True
+        spin_storage = bool(spinful)
+        for atom_pair, shape in zip(atom_pairs, chunk_shapes):
+            i_atom, j_atom = int(atom_pair[3]), int(atom_pair[4])
+            scalar_shape = (int(atom_num_orbits[i_atom]), int(atom_num_orbits[j_atom]))
+            stored_shape = tuple(int(value) for value in shape)
+            scalar_storage &= stored_shape == scalar_shape
+            spin_storage &= stored_shape == (2 * scalar_shape[0], 2 * scalar_shape[1])
+        if scalar_storage:
+            return False
+        if spin_storage:
+            return True
+        expected = "consistently scalar"
+        if spinful:
+            expected += " or consistently spin-expanded"
+        raise ValueError(f"Overlap block shapes must be {expected}")
+
     def _parse_matrix_H_like(self):
         """Parse Hamiltonian-like matrix (complex for spinful)."""
-        dtype = np.complex128 if self.spinful else np.float64
+        dtype = np.complex128 if self.stored_spinful else np.float64
 
         atom_pairs, bounds, shapes, entries = self._read_h5(self.matrix_path, dtype=dtype)
         self.atom_pairs = atom_pairs
@@ -606,6 +733,7 @@ class AOMatrixObj:
             self.atom_num_orbits,
             self.spinful,
             matrix_type="hamiltonian",
+            stored_spinful=self.stored_spinful,
         )
 
     def _build_entries_H_like(self, R_to_index=None, dtype=None):
@@ -623,7 +751,7 @@ class AOMatrixObj:
         if R_to_index is None:
             R_to_index = {tuple(R): i_R for i_R, R in enumerate(self.Rijk_list)}
         if dtype is None:
-            dtype = np.complex128 if self.spinful else np.float64
+            dtype = np.complex128 if self.stored_spinful else np.float64
 
         entries = np.empty(bounds[-1], dtype=dtype)
 
@@ -633,7 +761,7 @@ class AOMatrixObj:
             i_R = R_to_index[R_ijk]
             mat = self.mats[i_R]
 
-            if self.spinful:
+            if self.stored_spinful:
                 _i_slice_up = slice(self.atom_num_orbits_cumsum[i_atom], self.atom_num_orbits_cumsum[i_atom + 1])
                 _i_slice_dn = slice(
                     self.atom_num_orbits_cumsum[i_atom] + self.orbits_quantity,

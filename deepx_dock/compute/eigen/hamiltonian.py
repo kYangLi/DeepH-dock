@@ -7,6 +7,7 @@ eigenvalue handling.
 """
 
 import os
+from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
@@ -16,8 +17,13 @@ from tqdm import tqdm
 import threadpoolctl
 
 from deepx_dock.parallel import parallel_map
-from deepx_dock.misc import set_num_threads
+from deepx_dock.misc import parse_hamiltonian_storage, set_num_threads
 from deepx_dock.compute.eigen.matrix_obj import AOMatrixObj
+from deepx_dock.CONSTANT import (
+    DEEPX_HKB_FILENAME,
+    DEEPX_HAMILTONIAN_STORAGE_SPINLESS_PLUS_HKB,
+    DEEPX_INFO_FILENAME,
+)
 
 
 class HamiltonianObj(AOMatrixObj):
@@ -44,21 +50,54 @@ class HamiltonianObj(AOMatrixObj):
     """
 
     def __init__(self, data_path, H_file_path=None):
-        super().__init__(data_path, H_file_path)
+        info_dict = AOMatrixObj._read_info_json(Path(data_path) / DEEPX_INFO_FILENAME)
+        storage = self._validate_hamiltonian_storage(info_dict)
+        if storage == DEEPX_HAMILTONIAN_STORAGE_SPINLESS_PLUS_HKB:
+            super().__init__(data_path, matrix_type="hkb")
+            hbase_obj = AOMatrixObj(data_path, H_file_path, stored_spinful=False)
+            self._add_spinless_base(hbase_obj)
+            self.hkb_file_path = Path(data_path) / DEEPX_HKB_FILENAME
+            self.H_file_path = hbase_obj.matrix_path
+            del hbase_obj
+        else:
+            super().__init__(data_path, H_file_path)
         overlap_obj = AOMatrixObj(data_path, matrix_type="overlap")
         self.assert_compatible(overlap_obj)
         self.SR = overlap_obj.mats
 
+    @staticmethod
+    def _validate_hamiltonian_storage(info_dict):
+        return parse_hamiltonian_storage(info_dict)
+
+    def _add_spinless_base(self, hbase_obj):
+        try:
+            self.assert_compatible(hbase_obj)
+        except AssertionError as error:
+            raise ValueError(f"hamiltonian.h5 and hkb.h5 are incompatible: {error}") from error
+        if not np.array_equal(self.atom_pairs, hbase_obj.atom_pairs):
+            raise ValueError("hamiltonian.h5 and hkb.h5 must have identical atom_pairs")
+        n_orbit = self.orbits_quantity
+        expected_base_shape = (len(self.Rijk_list), n_orbit, n_orbit)
+        expected_hkb_shape = (len(self.Rijk_list), 2 * n_orbit, 2 * n_orbit)
+        if hbase_obj.mats.shape != expected_base_shape:
+            raise ValueError(f"Invalid spinless Hamiltonian shape: {hbase_obj.mats.shape}")
+        if self.mats.shape != expected_hkb_shape:
+            raise ValueError(f"Invalid HKB shape: {self.mats.shape}")
+        self.mats[:, :n_orbit, :n_orbit] += hbase_obj.mats
+        self.mats[:, n_orbit:, n_orbit:] += hbase_obj.mats
+
     @classmethod
-    def from_data(cls, structure_dict, info_dict, hamiltonian_data, overlap_data):
+    def from_data(cls, structure_dict, info_dict, hamiltonian_data, overlap_data, hkb_data=None):
         """
         Construct a HamiltonianObj from in-memory DeepH-format data.
 
         Bypasses file I/O. See ``AOMatrixObj.from_data`` for the format of
         ``structure_dict``, ``info_dict`` and the matrix data dicts.
 
-        The input overlap_data must always be **spinless**, and it will be
-        expanded to ``[[S,0],[0,S]]`` when ``info_dict["spinful"]=True``.
+        Legacy/full overlap_data may be scalar or explicitly spin-expanded;
+        block shapes select the representation. Split-HKB overlap_data must
+        be scalar and is expanded to ``[[S,0],[0,S]]`` when
+        ``info_dict["spinful"]=True``.
         When generating the info and overlap with
         :func:`deepx_dock.compute.overlap.calc_overlap_in_memory`,
         call it with ``spinful=False`` and modify ``info_dict["spinful"]``
@@ -77,12 +116,29 @@ class HamiltonianObj(AOMatrixObj):
             DeepH-format overlap arrays (atom_pairs, chunk_shapes,
             chunk_boundaries, entries). ``atom_pairs`` must match
             ``hamiltonian_data["atom_pairs"]``.
+        hkb_data : dict, optional
+            Full-spin DeepH-format KB component. Required only when
+            ``info_dict["split_hkb"] is True``;
+            rejected for legacy/full storage.
 
         Returns
         -------
         HamiltonianObj
         """
-        obj = super().from_data(structure_dict, info_dict, hamiltonian_data, matrix_type="hamiltonian")
+        storage = cls._validate_hamiltonian_storage(info_dict)
+        if storage == DEEPX_HAMILTONIAN_STORAGE_SPINLESS_PLUS_HKB:
+            if hkb_data is None:
+                raise ValueError("hkb_data is required when split_hkb=true")
+            obj = super().from_data(structure_dict, info_dict, hkb_data, matrix_type="hkb")
+            hbase_obj = AOMatrixObj.from_data(
+                structure_dict, info_dict, hamiltonian_data, matrix_type="hamiltonian", stored_spinful=False
+            )
+            obj._add_spinless_base(hbase_obj)
+            del hbase_obj
+        else:
+            if hkb_data is not None:
+                raise ValueError("hkb_data requires split_hkb=true")
+            obj = super().from_data(structure_dict, info_dict, hamiltonian_data, matrix_type="hamiltonian")
         overlap_obj = AOMatrixObj.from_data(structure_dict, info_dict, overlap_data, matrix_type="overlap")
         obj.assert_compatible(overlap_obj)
         obj.SR = overlap_obj.mats

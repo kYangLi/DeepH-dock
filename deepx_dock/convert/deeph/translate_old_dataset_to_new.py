@@ -15,7 +15,7 @@ from deepx_dock.CONSTANT import DEEPX_DENSITY_MATRIX_FILENAME, DEEPX_VR_FILENAME
 from deepx_dock.CONSTANT import DEEPX_POSITION_MATRIX_FILENAME
 from deepx_dock.CONSTANT import PERIODIC_TABLE_INDEX_TO_SYMBOL
 from deepx_dock.CONSTANT import PERIODIC_TABLE_SYMBOL_TO_INDEX
-from deepx_dock.misc import get_data_dir_lister, load_poscar_file
+from deepx_dock.misc import get_data_dir_lister, load_poscar_file, require_full_hamiltonian_storage
 
 DEEPX_NECESSARY_FILES = {DEEPX_POSCAR_FILENAME, DEEPX_INFO_FILENAME}
 
@@ -454,7 +454,6 @@ class OldDatasetTranslator:
         self.n_jobs = n_jobs
         self.n_tier = n_tier
         assert self.new_data_dir.is_dir(), f"{new_data_dir} is not a directory"
-        self.old_data_dir.mkdir(parents=True, exist_ok=True)
 
     def transfer_all_new_to_old(self):
         worker = partial(
@@ -462,19 +461,25 @@ class OldDatasetTranslator:
             old_data_dir=self.old_data_dir,
             new_data_dir=self.new_data_dir,
         )
-        data_dir_lister = get_data_dir_lister(
+        data_dirs = list(get_data_dir_lister(
             self.new_data_dir, self.n_tier, validation_check_deepx
-        )
-        parallel_map(worker, data_dir_lister, n_jobs=self.n_jobs, desc="Data")
+        ))
+        for dir_name in data_dirs:
+            require_full_hamiltonian_storage(
+                self.new_data_dir / dir_name, "DeepH legacy-format downgrade"
+            )
+        self.old_data_dir.mkdir(parents=True, exist_ok=True)
+        parallel_map(worker, data_dirs, n_jobs=self.n_jobs, desc="Data")
 
     @staticmethod
     def transfer_one_new_to_old(
         dir_name: str, old_data_dir: Path, new_data_dir: Path
     ):
+        new_dir_path = Path(new_data_dir) / dir_name
+        require_full_hamiltonian_storage(new_dir_path, "DeepH legacy-format downgrade")
         try:
             old_dir_path = old_data_dir / dir_name
             old_dir_path.mkdir(parents=True, exist_ok=True)
-            new_dir_path = new_data_dir / dir_name
             #
             isspinful, elem_indices, orbs_save = \
                 OldDatasetTranslator._transfer_new_info_to_old(

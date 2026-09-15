@@ -7,7 +7,12 @@ from functools import partial
 from deepx_dock.parallel import parallel_map
 from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME, DEEPX_INFO_FILENAME
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME, DEEPX_PREDICT_HAMILTONIAN_FILENAME
-from deepx_dock.misc import get_data_dir_lister, load_json_file, load_poscar_file
+from deepx_dock.misc import (
+    get_data_dir_lister,
+    load_json_file,
+    load_poscar_file,
+    require_full_hamiltonian_storage,
+)
 from deepx_dock.convert.deeph.translate_old_dataset_to_new import BASIS_TRANS_WIKI2OPENMX
 from deepx_dock.convert.openmx.translate_openmx_to_deeph import OPENMX_SCFOUT_FILENAME
 from deepx_dock.convert.openmx.translate_openmx_to_deeph import BOHR_TO_ANGSTROM, HARTREE_TO_EV
@@ -52,7 +57,6 @@ class DeepHToOpenMXTranslator:
         self.output_dir = Path(output_dir)
         self.n_jobs = n_jobs
         self.n_tier = n_tier
-        self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def transfer_all_deeph_to_openmx(self):
         """Process all subdirectories."""
@@ -62,10 +66,17 @@ class DeepHToOpenMXTranslator:
             deeph_path=self.deeph_data_dir,
             output_path=self.output_dir,
         )
-        data_dir_lister = get_data_dir_lister(
+        data_dirs = list(get_data_dir_lister(
             self.openmx_data_dir, self.n_tier, validation_check_scfout
-        )
-        parallel_map(worker, data_dir_lister, n_jobs=self.n_jobs, desc="Data")
+        ))
+        for dir_name in data_dirs:
+            deeph_dir_path = self.deeph_data_dir / dir_name
+            if deeph_dir_path.is_dir():
+                require_full_hamiltonian_storage(
+                    deeph_dir_path, "DeepH-to-OpenMX conversion"
+                )
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        parallel_map(worker, data_dirs, n_jobs=self.n_jobs, desc="Data")
 
     @staticmethod
     def _transfer_one(dir_name, openmx_path, deeph_path, output_path):
@@ -76,6 +87,7 @@ class DeepHToOpenMXTranslator:
         if not openmx_dir_path.is_dir() or not deeph_dir_path.is_dir():
             return
         try:
+            require_full_hamiltonian_storage(deeph_dir_path, "DeepH-to-OpenMX conversion")
             writer = OpenMXWriter(openmx_dir_path, deeph_dir_path, output_dir)
             writer.replace_hamiltonian()
         except Exception as e:
@@ -84,21 +96,24 @@ class DeepHToOpenMXTranslator:
 
 class OpenMXWriter:
     def __init__(self, openmx_path, deeph_path, output_path):
+        self.deeph_path = Path(deeph_path)
+        require_full_hamiltonian_storage(self.deeph_path, "DeepH-to-OpenMX conversion")
         self.scfout_path = Path(openmx_path) / OPENMX_SCFOUT_FILENAME
-        self.H_path = Path(deeph_path) / DEEPX_HAMILTONIAN_FILENAME
+        self.H_path = self.deeph_path / DEEPX_HAMILTONIAN_FILENAME
         self.output_path = Path(output_path)
         self.output_path.mkdir(parents=True, exist_ok=True)
         #
         self.scfout_reader = BinaryFileReader(self.scfout_path)
         #
-        self._load_poscar(Path(deeph_path) / DEEPX_POSCAR_FILENAME)
-        self._load_info_json(Path(deeph_path) / DEEPX_INFO_FILENAME)
+        self._load_poscar(self.deeph_path / DEEPX_POSCAR_FILENAME)
+        self._load_info_json(self.deeph_path / DEEPX_INFO_FILENAME)
         self._read_scfout_info()
         # Record the starting offset of DFT matrices
         self.matrix_offset = self.scfout_reader.offset
 
     def replace_hamiltonian(self):
         """Main workflow for replacing Hamiltonian in scfout file."""
+        require_full_hamiltonian_storage(self.deeph_path, "DeepH-to-OpenMX conversion")
         self.hamiltonian = self._read_h5(self.H_path, self.spinful, 1.0/HARTREE_TO_EV)
         self._check_matrix_info(self.hamiltonian, spinful=self.spinful)
         self._basis_transform_to_openmx(self.hamiltonian["entries"], self.spinful)
@@ -335,4 +350,3 @@ class OpenMXWriter:
             # Overwrite fermi energy
             fw.seek(self.matrix_offset + matrices_binary_size + struct.calcsize("i"))
             fw.write(struct.pack("d", self.fermi_energy_eV/HARTREE_TO_EV))
-

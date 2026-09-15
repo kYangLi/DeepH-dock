@@ -21,7 +21,7 @@ from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
 from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME, DEEPX_INFO_FILENAME
 from deepx_dock.CONSTANT import PERIODIC_TABLE_SYMBOL_TO_INDEX
 from deepx_dock.CONSTANT import PERIODIC_TABLE_INDEX_TO_SYMBOL
-from deepx_dock.misc import get_data_dir_lister
+from deepx_dock.misc import get_data_dir_lister, require_full_hamiltonian_storage
 
 MASK_THRESHOLD = 1E-10
 
@@ -206,6 +206,11 @@ class BaseAnalyzer:
         self.n_tier = n_tier
 
     def analyze_all(self):
+        if self.target_name == "H":
+            for sid in self._get_all_dft_dir():
+                require_full_hamiltonian_storage(
+                    self.bm_dft_dir / sid, "Hamiltonian error analysis"
+                )
         if self.cached_result_path.is_file():
             self._load_cached_result()
             return
@@ -1129,4 +1134,3 @@ class ErrorStructureDistributionAnalyzer(BaseAnalyzer):
         #
         plt.tight_layout()
         plt.savefig(self.save_figure_path, dpi=plot_dpi)
-

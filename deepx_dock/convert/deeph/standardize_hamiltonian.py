@@ -5,7 +5,7 @@ import h5py
 from functools import partial
 
 from deepx_dock.parallel import parallel_map
-from deepx_dock.misc import load_json_file
+from deepx_dock.misc import load_json_file, require_full_hamiltonian_storage
 from deepx_dock.CONSTANT import DEEPX_POSCAR_FILENAME, DEEPX_INFO_FILENAME
 from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
@@ -35,16 +35,21 @@ class DatasetHStandardize:
             all_data_dir=self.data_dir,
             overwrite=self.h5_overwrite,
         )
-        data_dir_lister = get_data_dir_lister(
+        data_dirs = list(get_data_dir_lister(
             self.data_dir, self.n_tier, validation_check_H
-        )
-        parallel_map(worker, data_dir_lister, n_jobs=self.n_jobs, desc="Data")
+        ))
+        for dir_name in data_dirs:
+            require_full_hamiltonian_storage(
+                self.data_dir / dir_name, "Hamiltonian standardization"
+            )
+        parallel_map(worker, data_dirs, n_jobs=self.n_jobs, desc="Data")
 
     @staticmethod
     def standardize_one(dir_name: str, all_data_dir, overwrite=False):
+        dft_dir_path = Path(all_data_dir) / dir_name
+        require_full_hamiltonian_storage(dft_dir_path, "Hamiltonian standardization")
         try:
             #
-            dft_dir_path = Path(all_data_dir) / dir_name
             spinful = DatasetHStandardize._get_spinful_info(dft_dir_path)
             #
             S_path = dft_dir_path / DEEPX_OVERLAP_FILENAME

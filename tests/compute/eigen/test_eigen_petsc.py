@@ -15,6 +15,9 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent))
+
+from split_hkb_test_utils import expand_overlap_to_spinful, make_split_hkb
 
 MPI_ENV = {**os.environ, "FI_PROVIDER": "shm", "I_MPI_FABRICS": "shm"}
 
@@ -109,6 +112,59 @@ def test_band_petsc_spinful(petsc_data_soc, tmp_path):
     """Test PETSc band calculation for a spinful (SOC) system"""
     band_file = _run_calc_band(tmp_path, petsc_data_soc["input"])
     _compare_with_reference(band_file, petsc_data_soc["reference"] / "band.h5")
+
+
+def test_band_petsc_spinful_expanded_overlap(petsc_data_soc, tmp_path):
+    """Test the legacy HPRO convention with explicit spin blocks in overlap.h5."""
+    expanded_input = tmp_path / "Bi2Se3_SOC_expanded_overlap"
+    shutil.copytree(petsc_data_soc["input"], expanded_input)
+    expand_overlap_to_spinful(expanded_input)
+    band_file = _run_calc_band(tmp_path, expanded_input)
+    _compare_with_reference(band_file, petsc_data_soc["reference"] / "band.h5")
+
+
+def test_band_petsc_spinless_plus_hkb(petsc_data_soc, tmp_path):
+    """Test PETSc band calculation for split spinless-base plus spinful-HKB storage"""
+    split_input = tmp_path / "Bi2Se3_SOC_split"
+    make_split_hkb(petsc_data_soc["input"], split_input)
+    band_file = _run_calc_band(tmp_path, split_input)
+    _compare_with_reference(band_file, petsc_data_soc["reference"] / "band.h5")
+
+
+def test_petsc_split_load_error_is_synchronized(petsc_data_soc, tmp_path):
+    """A rank-0 split-file error must reach every MPI rank without a hang."""
+    mpirun = shutil.which("mpirun")
+    if mpirun is None:
+        pytest.skip("mpirun is not available")
+    split_input = tmp_path / "Bi2Se3_SOC_invalid_split"
+    make_split_hkb(petsc_data_soc["input"], split_input)
+    (split_input / "hkb.h5").unlink()
+    script = textwrap.dedent("""
+        from mpi4py import MPI
+        from deepx_dock.compute.eigen.hamiltonian_petsc import PETScHamiltonianObj
+
+        comm = MPI.COMM_WORLD
+        try:
+            PETScHamiltonianObj(r"{data_path}")
+        except Exception as error:
+            local_ok = "hkb.h5" in str(error)
+        else:
+            local_ok = False
+        if not comm.allreduce(local_ok, op=MPI.LAND):
+            raise AssertionError("Not every rank received the hkb.h5 load error")
+        if comm.rank == 0:
+            print("SPLIT_LOAD_ERROR_SYNC_OK")
+        """).format(data_path=split_input)
+    result = subprocess.run(
+        [mpirun, "-np", "2", sys.executable, "-c", script],
+        env=MPI_ENV,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert result.returncode == 0, f"MPI load-error test failed:\n{result.stdout}\n{result.stderr}"
+    assert "SPLIT_LOAD_ERROR_SYNC_OK" in result.stdout
 
 
 def test_eigenvector_gather(petsc_data, tmp_path):
