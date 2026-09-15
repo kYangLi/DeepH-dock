@@ -300,7 +300,7 @@ class BandPlotter:
             self.hsk_distance_list = hf["hsk_distance_list"][()]
             self.band_data = hf["band_data"][()]
 
-    def plot(self, Emin=-10.0, Emax=10.0, plot_format="png", dpi=300):
+    def plot(self, Emin=-10.0, Emax=10.0, style="plot", plot_format="png", dpi=300):
         # Set the plot style
         self._setup_plot_style()
         # Create the figure and axis object
@@ -327,7 +327,12 @@ class BandPlotter:
         for band_index in range(self.band_quantity):
             x = self.kpoints_distance_list
             y = self.band_data[band_index]
-            band_plot.plot(x, y, "r-", linewidth=1.2)
+            if style == "plot":
+                band_plot.plot(x, y, "r-", linewidth=1.2)
+            elif style == "scatter":
+                band_plot.scatter(x, y, color="r", s=3.0)
+            else:
+                raise ValueError(f"Unknown style {style}")
         # Save the figure
         fig_save_path = self.band_data_file_path.parent / f"band.{plot_format}"
         plt.tight_layout()

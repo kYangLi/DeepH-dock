@@ -361,17 +361,6 @@ class NewDatasetTranslator:
             
             n_pairs = len(sorted_atom_pairs)
             
-            # 获取矩阵形状
-            sample_pair = sorted_atom_pairs[0]
-            sample_matrices = key_dict[sample_pair]
-            for mat in sample_matrices:
-                if mat is not None:
-                    matrix_shape = mat.shape
-                    break
-            
-            # 初始化新格式数据结构
-            # entries shape: (3, n_pairs * norb * norb)
-            norb = matrix_shape[0]
             new_h5_data = {
                 "atom_pairs": np.zeros((n_pairs, 5), dtype=np.int64),
                 "chunk_boundaries": np.zeros(n_pairs + 1, dtype=np.int64),
@@ -383,15 +372,21 @@ class NewDatasetTranslator:
             for i, atom_pair in enumerate(sorted_atom_pairs):
                 if atom_pair in key_dict:
                     matrices = key_dict[atom_pair]
+                    # 确定该 pair 的实际 block 形状
+                    pair_shape = None
+                    for mat in matrices:
+                        if mat is not None:
+                            pair_shape = mat.shape
+                            break
                     # 确保三个方向都有数据，没有则填充零矩阵
                     for d in range(3):
                         if matrices[d] is None:
-                            matrices[d] = np.zeros(matrix_shape, dtype=complex)
-                    # stack 三个方向: shape (3, norb, norb)
+                            matrices[d] = np.zeros(pair_shape, dtype=complex)
+                    # stack 三个方向: shape (3, pair_shape[0], pair_shape[1])
                     stacked = np.stack(matrices, axis=0)
                     
                     new_h5_data["atom_pairs"][i, :] = list(atom_pair)
-                    new_h5_data["chunk_shapes"][i] = [norb, norb]
+                    new_h5_data["chunk_shapes"][i] = [pair_shape[0], pair_shape[1]]
                     new_h5_data["entries_list"][i] = stacked
             
             # 计算 chunk_boundaries

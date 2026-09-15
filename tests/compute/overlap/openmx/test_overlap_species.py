@@ -1,37 +1,50 @@
-"""
-Tests for OpenMX overlap calculation using species file
-"""
+"""Numerical tests for the HPRO-backed OpenMX overlap interface."""
 
-import pytest
+import json
+import os
+import shutil
 import subprocess
 from pathlib import Path
-import tempfile
-import shutil
+
 import h5py
 import numpy as np
+import pytest
 
 
 @pytest.fixture
-def raw_species_dir():
-    """OpenMX DFT_DATA19 directory."""
-    dft_data = Path("/home/deeph/software/calc/OpenMX/build/openmx3.9/DFT_DATA19")
-    if not dft_data.exists():
-        pytest.skip("OpenMX DFT_DATA19 not found")
+def raw_species_dir() -> Path:
+    """Allow an external OpenMX data installation without fixing a machine path."""
+    dft_data = Path(os.environ.get("OPENMX_DFT_DATA19", "/home/deeph/software/calc/OpenMX/build/openmx3.9/DFT_DATA19"))
+    if not dft_data.is_dir():
+        pytest.skip("Set OPENMX_DFT_DATA19 to an OpenMX DFT_DATA19 directory")
     return dft_data
 
 
 @pytest.fixture
-def openmx_test_data():
-    """OpenMX test data directory."""
-    test_dir = Path(__file__).parent.parent.parent.parent / "convert" / "openmx"
-    openmx_bak = test_dir / "openmx.bak"
-    deeph_bak = test_dir / "deeph.bak"
-    if not openmx_bak.exists():
-        pytest.skip("OpenMX test data not found")
-    return {
-        "input": openmx_bak,
-        "reference": deeph_bak,
-    }
+def openmx_test_data() -> dict:
+    test_dir = Path(__file__).parents[3] / "convert" / "openmx"
+    return {"input": test_dir / "openmx.bak", "reference": test_dir / "deeph.bak"}
+
+
+@pytest.fixture
+def openmx_basis_dir(raw_species_dir: Path, openmx_test_data: dict, tmp_path: Path) -> Path:
+    input_text = (openmx_test_data["input"] / "MoTe2" / "openmx_in.dat").read_text()
+    declarations = input_text.split("<Definition.of.Atomic.Species", 1)[1].split("Definition.of.Atomic.Species>", 1)[0]
+    basis_specs = {}
+    basis_dir = tmp_path / "basis"
+    basis_dir.mkdir()
+    for line in declarations.splitlines():
+        fields = line.split()
+        if not fields or fields[0].startswith("#"):
+            continue
+        element, basis = fields[:2]
+        basis_specs[element] = basis
+        filename = basis.split("-", 1)[0] + ".pao"
+        source = raw_species_dir / "PAO" / filename
+        assert source.is_file(), f"Missing OpenMX basis fixture: {source}"
+        (basis_dir / filename).symlink_to(source)
+    (basis_dir / "basis_info.json").write_text(json.dumps(basis_specs))
+    return basis_dir
 
 
 def compare_deeph_h5(file1: Path, file2: Path, threshold: float = 1e-4) -> tuple:
@@ -91,81 +104,46 @@ def compare_deeph_h5(file1: Path, file2: Path, threshold: float = 1e-4) -> tuple
         return True, f"max_diff={max_diff:.2e}"
 
 
-def test_overlap_single_file(raw_species_dir, openmx_test_data):
-    """Test overlap calculation for single file."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-        output_dir = tmpdir / "output"
-        output_dir.mkdir()
-
-        input_file = output_dir / "openmx_in.dat"
-        shutil.copy(openmx_test_data["input"] / "MoTe2" / "openmx_in.dat", input_file)
-
-        species_file = tmpdir / "species_openmx_pbe.h5"
-
-        result = subprocess.run(
-            [
-                "dock",
-                "compute",
-                "overlap",
-                "openmx",
-                str(input_file),
-                str(species_file),
-                "--raw-species-dir",
-                str(raw_species_dir),
-            ],
-            capture_output=True,
-            text=True,
-        )
-
-        assert result.returncode == 0, f"Command failed with stderr:\n{result.stderr}"
-
-        ref_overlap = openmx_test_data["reference"] / "MoTe2" / "overlap.h5"
-        calc_overlap = output_dir / "overlap.h5"
-
-        assert calc_overlap.exists(), "overlap.h5 not created"
-
-        is_equal, msg = compare_deeph_h5(ref_overlap, calc_overlap)
-        assert is_equal, f"Overlap mismatch: {msg}"
+def test_overlap_single_file(openmx_basis_dir: Path, openmx_test_data: dict, tmp_path: Path) -> None:
+    reference = openmx_test_data["reference"] / "MoTe2"
+    output = tmp_path / "output"
+    result = subprocess.run(
+        [
+            "dock",
+            "compute",
+            "overlap",
+            str(reference / "POSCAR"),
+            str(openmx_basis_dir),
+            "openmx",
+            "--output-dir",
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, f"Command failed:\n{result.stdout}\n{result.stderr}"
+    is_equal, message = compare_deeph_h5(reference / "overlap.h5", output / "overlap.h5")
+    assert is_equal, message
 
 
-def test_overlap_batch_mode(raw_species_dir, openmx_test_data):
-    """Test overlap calculation in batch mode."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-
-        data_dir = tmpdir / "dataset"
-        data1 = data_dir / "data1"
-        data2 = data_dir / "data2"
-        data1.mkdir(parents=True)
-        data2.mkdir(parents=True)
-
-        shutil.copy(openmx_test_data["input"] / "MoTe2" / "openmx_in.dat", data1 / "openmx_in.dat")
-        shutil.copy(openmx_test_data["input"] / "MoTe2" / "openmx_in.dat", data2 / "openmx_in.dat")
-
-        species_file = tmpdir / "species_openmx_pbe.h5"
-
-        result = subprocess.run(
-            [
-                "dock",
-                "compute",
-                "overlap",
-                "openmx",
-                str(data_dir),
-                str(species_file),
-                "-t",
-                "0",
-                "--raw-species-dir",
-                str(raw_species_dir),
-            ],
-            capture_output=True,
-            text=True,
-        )
-
-        assert result.returncode == 0, f"Command failed with stderr:\n{result.stderr}"
-
-        assert (data1 / "overlap.h5").exists(), "data1/overlap.h5 not created"
-        assert (data2 / "overlap.h5").exists(), "data2/overlap.h5 not created"
+def test_overlap_batch_mode(openmx_basis_dir: Path, openmx_test_data: dict, tmp_path: Path) -> None:
+    reference = openmx_test_data["reference"] / "MoTe2"
+    dataset = tmp_path / "dataset"
+    for name in ("data1", "data2"):
+        data_dir = dataset / name
+        data_dir.mkdir(parents=True)
+        shutil.copy2(reference / "POSCAR", data_dir / "POSCAR")
+    result = subprocess.run(
+        ["dock", "compute", "overlap", str(dataset), str(openmx_basis_dir), "openmx", "-t", "0", "-j", "1"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, f"Command failed:\n{result.stdout}\n{result.stderr}"
+    for name in ("data1", "data2"):
+        is_equal, message = compare_deeph_h5(reference / "overlap.h5", dataset / name / "overlap.h5")
+        assert is_equal, message
 
 
 def test_overlap_cli_help():

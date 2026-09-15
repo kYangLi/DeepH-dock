@@ -8,6 +8,7 @@ import subprocess
 import sys
 import textwrap
 from functools import lru_cache
+from importlib.util import find_spec
 from pathlib import Path
 
 import h5py
@@ -25,6 +26,8 @@ MPI_ENV = {**os.environ, "FI_PROVIDER": "shm", "I_MPI_FABRICS": "shm"}
 @lru_cache(maxsize=1)
 def _petsc_stack_ok() -> bool:
     """Probe the mpi4py/petsc4py/slepc4py stack (complex scalar PETSc) in a subprocess."""
+    if any(find_spec(name) is None for name in ("mpi4py", "petsc4py", "slepc4py")):
+        return False
     probe = (
         "from mpi4py import MPI; "
         "from petsc4py import PETSc; "

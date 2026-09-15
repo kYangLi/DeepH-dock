@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 
 from deepx_dock.compute.eigen.hamiltonian import HamiltonianObj
-from deepx_dock.compute.eigen.polarization import PolCalc, assemble_position_matrix
+from deepx_dock.compute.polarization.polarization import PolCalc, assemble_position_matrix
 
 POL_DIR = Path(__file__).parent
 DFT_DIR = POL_DIR / "pol.bak"

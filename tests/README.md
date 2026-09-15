@@ -135,6 +135,22 @@ pytest --cov=deepx_dock --cov-report=html
 - Critical for scientific computing accuracy
 - **Must not be modified** - these are the ground truth
 
+### Optional Numerical Dependencies
+
+The OpenMX overlap tests use the current HPRO interface with a POSCAR and
+raw PAO basis files. Set `OPENMX_DFT_DATA19` to your OpenMX `DFT_DATA19`
+directory to run the single-structure and batch numerical comparisons:
+
+```bash
+export OPENMX_DFT_DATA19=/path/to/openmx3.9/DFT_DATA19
+python -m pytest tests/compute/overlap/openmx
+```
+
+The PAO parser and HDF5 serialization tests use small generated fixtures and
+do not require an external OpenMX installation. PETSc eigenvalue tests require
+an importable complex-scalar PETSc/SLEPc stack; missing optional dependencies
+are reported as skips, not successful numerical checks.
+
 ## Writing New Tests
 
 ### Template for Module Tests

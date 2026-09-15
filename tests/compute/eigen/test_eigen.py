@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from deepx_dock.compute.eigen.hamiltonian import HamiltonianObj
 from deepx_dock.compute.eigen.matrix_obj import AOMatrixObj
+from deepx_dock.compute.polarization.polarization import PolCalc
 from split_hkb_test_utils import expand_overlap_to_spinful, make_split_hkb, read_matrix_data
 
 
@@ -28,6 +29,22 @@ def eigen_data():
         "input": test_dir / "eigen.clean",
         "reference": test_dir / "eigen.bak",
     }
+
+
+def test_split_hkb_polarization_matches_full(tmp_path: Path) -> None:
+    """The relocated polarization calculator consumes the reconstructed SOC Hamiltonian."""
+    source_dir = Path(__file__).parent.parent / "pol" / "pol.bak" / "Bi2Se3_SOC"
+    split_dir = tmp_path / "split"
+    make_split_hkb(source_dir, split_dir)
+    positions = read_matrix_data(source_dir / "position_matrix.h5")
+    calculators = [
+        PolCalc(HamiltonianObj(data_dir), positions, {"Bi": 15.0, "Se": 6.0}, occupation=48)
+        for data_dir in (source_dir, split_dir)
+    ]
+    np.testing.assert_allclose(calculators[1].r_abs, calculators[0].r_abs, rtol=0, atol=1e-12)
+    results = [calculator.calc(k_mesh=(3, 3, 1), n_jobs=1, parallel_k=False) for calculator in calculators]
+    for key in ("dipole_elec_debye", "dipole_ion_debye", "polarization_mucm2"):
+        np.testing.assert_allclose(results[1][key], results[0][key], rtol=0, atol=1e-9)
 
 
 def test_eigen_find_fermi(eigen_data, tmp_path):

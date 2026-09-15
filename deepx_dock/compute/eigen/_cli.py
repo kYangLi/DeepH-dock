@@ -171,15 +171,21 @@ def calc_band_petsc(data_path, num_band, e_target, maxiter, dim_subspace):
             default=(-5, 5),
             help="Plot band energy window (respect to fermi energy).",
         ),
+        click.option(
+            "--style",
+            type=click.Choice(["plot", "scatter"]),
+            default="plot",
+            help="Plot style.",
+        ),
     ],
 )
-def plot_band_data(data_path, energy_window):
+def plot_band_data(data_path, energy_window, style):
     data_path = Path(data_path).resolve()
     band_data_path = data_path / DEEPX_BAND_FILENAME
     from deepx_dock.compute.eigen.band import BandPlotter
 
     bd_plotter = BandPlotter(band_data_path)
-    bd_plotter.plot(Emin=energy_window[0], Emax=energy_window[1])
+    bd_plotter.plot(Emin=energy_window[0], Emax=energy_window[1], style=style)
 
 
 @register(
