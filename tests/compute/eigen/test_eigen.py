@@ -33,7 +33,7 @@ def eigen_data():
 
 def test_split_hkb_polarization_matches_full(tmp_path: Path) -> None:
     """The relocated polarization calculator consumes the reconstructed SOC Hamiltonian."""
-    source_dir = Path(__file__).parent.parent / "pol" / "pol.bak" / "Bi2Se3_SOC"
+    source_dir = Path(__file__).parent.parent / "polarization" / "pol.bak" / "Bi2Se3_SOC"
     split_dir = tmp_path / "split"
     make_split_hkb(source_dir, split_dir)
     positions = read_matrix_data(source_dir / "position_matrix.h5")

@@ -179,27 +179,36 @@ def test_eigenvector_gather(petsc_data, tmp_path):
 
         data_path = r"{data_path}"
         obj = PETScHamiltonianObj(data_path)
-        ks = [np.array([0.0, 0.0, 0.0]), np.array([0.1, 0.0, 0.0])]
-        eigvals, eigvecs = obj.diag(ks, bands_only=False, num_band=8, maxiter=500)
-        assert eigvals.shape == (8, 2), f"eigvals shape {{eigvals.shape}}"
+        ks = [
+            np.array([x, 0.0, 0.0]) for x in np.arange(0.0, 1.0, 0.25)
+        ] + [
+            np.array([0.0, y, 0.0]) for y in np.arange(0.0, 1.0, 0.25)
+        ] + [
+            np.array([0.0, 0.0, z]) for z in np.arange(0.0, 1.0, 0.25)
+        ]
+        nk = len(ks)
+        eigvals, eigvecs = obj.diag(ks, bands_only=False, num_band=8, maxiter=500, tol=1e-6)
+        assert eigvals.shape == (8, nk), f"eigvals shape {{eigvals.shape}}"
         ## rank-local blocks: shape and row ownership consistency
         rstart, rend = obj.vecs_empty[0].getOwnershipRange() if obj.vecs_empty is not None else (0, obj.nrows)
-        assert eigvecs.shape == (rend - rstart, 8, 2), f"local shape {{eigvecs.shape}}, ownership [{{rstart}}, {{rend}})"
+        assert eigvecs.shape == (rend - rstart, 8, nk), f"local shape {{eigvecs.shape}}, ownership [{{rstart}}, {{rend}})"
         total_rows = obj.comm.allreduce(eigvecs.shape[0], op=MPI.SUM)
         assert total_rows == obj.nrows, f"sum of local rows {{total_rows}} != nrows {{obj.nrows}}"
         ## gather to rank 0
         gathered = obj.gather_vec_to_rank0(eigvecs)
         if obj.rank == 0:
-            assert gathered.shape == (obj.nrows, 8, 2), f"gathered shape {{gathered.shape}}"
+            assert gathered.shape == (obj.nrows, 8, nk), f"gathered shape {{gathered.shape}}"
             for ik, k in enumerate(ks):
                 Sk, Hk = obj.Sk_and_Hk(k)
                 Sk = Sk.toarray()
                 Hk = Hk.toarray()
                 V = gathered[:, :, ik]
                 residual = np.abs(Hk @ V - (Sk @ V) * eigvals[:, ik][None, :]).max()
+                print("Hv-εSv max residual:", residual)
                 assert residual < 1e-4, f"residual {{residual}}"
                 overlap = V.conj().T @ Sk @ V
                 orthonormality_error = np.abs(overlap - np.eye(eigvals.shape[0])).max()
+                print("vSv-I max residual:", orthonormality_error)
                 assert orthonormality_error < 1e-4, f"orthonormality error {{orthonormality_error}}"
         else:
             assert gathered is None, "non-zero ranks must receive None"

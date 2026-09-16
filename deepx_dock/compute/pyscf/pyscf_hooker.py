@@ -66,7 +66,7 @@ class PySCFDataHooker:
     Usage: 
 
         >>> import pyscf
-        >>> from deepx_dock.io.PySCF import SCFDataHook
+        >>> from deepx_dock.compute.pyscf.pyscf_hooker import PySCFDataHooker
         >>> mol = pyscf.gto.Mole()
         >>> mol.build(
         >>>     atom = \'\'\'O 0 0 0; H  0 1 0; H 0 0 1\'\'\',

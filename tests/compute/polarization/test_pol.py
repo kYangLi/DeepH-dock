@@ -1,7 +1,7 @@
 """
 Tests for electric polarization (Berry phase) via :class:`PolCalc`.
 
-The test data (GaAs zincblende) lives under ``tests/compute/pol``:
+The test data (GaAs zincblende) lives under ``tests/compute/polarization``:
 
 - ``dft/*`` : DeepH-format inputs (POSCAR, info.json, overlap.h5,
   hamiltonian.h5, position_matrix.h5) converted from the OpenMX SCF runs.

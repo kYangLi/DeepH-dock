@@ -16,6 +16,8 @@ def raw_species_dir() -> Path:
     """Allow an external OpenMX data installation without fixing a machine path."""
     dft_data = Path(os.environ.get("OPENMX_DFT_DATA19", "/home/deeph/software/calc/OpenMX/build/openmx3.9/DFT_DATA19"))
     if not dft_data.is_dir():
+        dft_data = Path(__file__).resolve().parent
+    if not dft_data.is_dir():
         pytest.skip("Set OPENMX_DFT_DATA19 to an OpenMX DFT_DATA19 directory")
     return dft_data
 
