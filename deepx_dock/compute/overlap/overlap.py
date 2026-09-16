@@ -8,14 +8,16 @@ from typing import Optional
 
 OPENMX_DEFAULT_ECUT = 1800.0
 OPENMX_DEFAULT_KDENSE = 15.0
+AIMS_DEFAULT_ECUT = 150000.0
+AIMS_DEFAULT_KDENSE = 30.0
 SIESTA_DEFAULT_ECUT = 100.0
 
 
 def normalize_aocode(aocode: str) -> str:
     """Normalize the basis-code spelling accepted by the overlap interface."""
     normalized = aocode.strip().lower()
-    if normalized not in {"siesta", "openmx"}:
-        raise ValueError(f"Unsupported overlap basis code: {aocode}. Use 'siesta' or 'openmx'.")
+    if normalized not in {"siesta", "openmx", "species_h5"}:
+        raise ValueError(f"Unsupported overlap basis code: {aocode}. Use 'siesta', 'openmx' or 'species_h5'.")
     return normalized
 
 
@@ -23,6 +25,12 @@ def default_ecut(aocode: str) -> float:
     """Return the default HPRO Fourier cutoff for a basis interface."""
     if normalize_aocode(aocode) == "openmx":
         return OPENMX_DEFAULT_ECUT
+    if normalize_aocode(aocode) == "species_h5":
+        raise ValueError(
+            f"No default ecut for aocode 'species_h5'. Please set ecut explicitly, e.g., "
+            f"{OPENMX_DEFAULT_ECUT} for openmx-sourced species.h5 and {AIMS_DEFAULT_ECUT} "
+            f"for aims-sourced species.h5."
+        )
     return SIESTA_DEFAULT_ECUT
 
 
@@ -30,6 +38,12 @@ def default_kdense(aocode: str) -> Optional[float]:
     """Return the default reciprocal radial-grid density for a basis interface."""
     if normalize_aocode(aocode) == "openmx":
         return OPENMX_DEFAULT_KDENSE
+    if normalize_aocode(aocode) == "species_h5":
+        raise ValueError(
+            f"No default kdense for aocode 'species_h5'. Please set kdense explicitly, e.g., "
+            f"{OPENMX_DEFAULT_KDENSE} for openmx-sourced species.h5 and {AIMS_DEFAULT_KDENSE} "
+            f"for aims-sourced species.h5."
+        )
     return None
 
 
@@ -39,7 +53,8 @@ def load_aodata_from_files(poscar_path: str | Path, basis_path: str | Path, aoco
 
     For OpenMX, ``basis_path`` must contain the OpenMX 3.9 PAO files and
     ``basis_info.json``. For SIESTA, it must contain one ``.ion`` file per
-    element in the POSCAR.
+    element in the POSCAR. For ``species_h5``, it must contain ``species.h5``
+    file.
     """
     from HPRO.io.aodata import AOData
     from HPRO.io.struio import from_poscar
@@ -152,7 +167,7 @@ def calc_overlap_in_memory(
         Directory containing the basis files (OpenMX PAO files +
         ``basis_info.json``, or one SIESTA ``.ion`` file per element).
     aocode : str
-        Basis code: "siesta" or "openmx".
+        Basis code: "siesta", "openmx" or "species_h5".
     spinful : bool, optional
         If True, return the expanded overlap matrix as [[S, 0], [0, S]].
         Default: False.

@@ -7,6 +7,8 @@ from deepx_dock._cli.registry import register
 from deepx_dock.compute.overlap.overlap import (
     OPENMX_DEFAULT_ECUT,
     OPENMX_DEFAULT_KDENSE,
+    AIMS_DEFAULT_ECUT,
+    AIMS_DEFAULT_KDENSE,
     SIESTA_DEFAULT_ECUT,
     default_ecut,
     default_kdense,
@@ -16,12 +18,12 @@ from deepx_dock.compute.overlap.overlap import (
 
 @register(
     cli_name="overlap",
-    cli_help="Calculate AO overlap matrices from POSCAR and SIESTA/OpenMX basis files using HPRO.",
+    cli_help="Calculate AO overlap matrices from POSCAR and SIESTA/OpenMX/species.h5 basis files using HPRO.",
     cli_default=True,
     cli_args=[
         click.argument("path", type=click.Path(exists=True)),
         click.argument("basis_path", type=click.Path(exists=True, file_okay=False)),
-        click.argument("aocode", type=click.Choice(["siesta", "openmx"], case_sensitive=False)),
+        click.argument("aocode", type=click.Choice(["siesta", "openmx", "species_h5"], case_sensitive=False)),
         click.option(
             "--spinful",
             "--soc",
@@ -56,13 +58,16 @@ from deepx_dock.compute.overlap.overlap import (
             type=float,
             default=None,
             help=f"Fourier cutoff in Hartree. Defaults: SIESTA={SIESTA_DEFAULT_ECUT}, "
-            f"OpenMX={OPENMX_DEFAULT_ECUT}.",
+            f"OpenMX={OPENMX_DEFAULT_ECUT}; species_h5: no default (must be provided explicitly), e.g., "
+            f"{OPENMX_DEFAULT_ECUT} (openmx-sourced) or {AIMS_DEFAULT_ECUT} (aims-sourced).",
         ),
         click.option(
             "--kdense",
             type=float,
             default=None,
-            help=f"Reciprocal radial-grid density. Defaults: SIESTA=HPRO default, OpenMX={OPENMX_DEFAULT_KDENSE}.",
+            help=f"Reciprocal radial-grid density. Defaults: SIESTA=HPRO default, "
+            f"OpenMX={OPENMX_DEFAULT_KDENSE}; species_h5: no default (must be provided explicitly), e.g., "
+            f"{OPENMX_DEFAULT_KDENSE} (openmx-sourced) or {AIMS_DEFAULT_KDENSE} (aims-sourced).",
         ),
         click.option("--force", is_flag=True, help="Overwrite an existing overlap.h5 file."),
     ],
@@ -85,10 +90,12 @@ def overlap(
     Examples:
 
     \b
-      dock compute overlap path_to_poscar path_to_basis_files siesta
-      dock compute overlap path_to_poscar path_to_basis_files siesta -s
-      dock compute overlap path_to_poscar path_to_basis_files openmx
-      dock compute overlap path_to_poscar path_to_basis_files openmx -s
+      dock compute overlap <path_to_poscar> <path_to_basis_files> siesta
+      dock compute overlap <path_to_poscar> <path_to_basis_files> siesta -s
+      dock compute overlap <path_to_poscar> <path_to_basis_files> openmx
+      dock compute overlap <path_to_poscar> <path_to_basis_files> openmx -s
+      dock compute overlap <path_to_poscar> <parent_dir_of_species_h5> species_h5 --ecut 1800.0 --kdense 15.0  # openmx
+      dock compute overlap <path_to_poscar> <parent_dir_of_species_h5> species_h5 --ecut 150000.0 --kdense 30.0  # aims
     """
     path_obj = Path(path)
     basis_path_obj = Path(basis_path)

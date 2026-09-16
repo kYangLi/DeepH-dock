@@ -26,7 +26,10 @@ def calc_position(
     Returns:
         [MatAO_x, MatAO_y, MatAO_z]: r_x, r_y and r_z components.
     """
-    from HPRO.v2h.twocenter import calc_position as hpro_calc_position
+    try:
+        from HPRO.v2h.twocenter import calc_position as hpro_calc_position
+    except ImportError as exc:
+        raise ImportError("The installed HPRO does not support position matrix calculation.") from exc
 
     return hpro_calc_position(aodata1, aodata2=aodata2, Ecut=Ecut, kdense=kdense, overlaps=overlaps, **kwargs)
 
@@ -73,7 +76,10 @@ def save_overlap_and_position_from_files(
 
     The matrix and metadata are written with HPRO's DeepH-format writers.
     """
-    from HPRO.io.deephio import save_mat_deeph, save_mats_deeph, save_structure_deeph
+    try:
+        from HPRO.io.deephio import save_mat_deeph, save_mats_deeph, save_structure_deeph
+    except ImportError as exc:
+        raise ImportError("The installed HPRO does not support saving position matrix files.") from exc
     from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME, DEEPX_POSITION_MATRIX_FILENAME
 
     poscar_path = Path(poscar_path)
@@ -126,7 +132,7 @@ def calc_overlap_and_position_in_memory(
         Directory containing the basis files (OpenMX PAO files +
         ``basis_info.json``, or one SIESTA ``.ion`` file per element).
     aocode : str
-        Basis code: "siesta" or "openmx".
+        Basis code: "siesta", "openmx" or "species_h5".
     spinful : bool, optional
         If True, return the expanded overlap and position matrix as [[M, 0], [0, M]].
         Default: False.
