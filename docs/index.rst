@@ -139,7 +139,7 @@ Citation
 
 If you use this code in your academic work, please cite the complete package featuring the latest implementation, methodology, and workflow of `DeepH <https://github.com/kYangLi/DeepH-pack-docs>`_:
 
-`Yang Li, Yanzhen Wang, Boheng Zhao, et al. DeepH-pack: a general-purpose neural network package for deep-learning electronic structure calculations. npj Computational Materials 12, 361 (2026) <https://www.nature.com/articles/s41524-026-02219-2>`_
+`Yang Li, Yanzhen Wang, Boheng Zhao, et al. DeepH-pack: a general-purpose neural network package for deep-learning electronic structure calculations. npj Comput. Mater. 12, 361 (2026) <https://www.nature.com/articles/s41524-026-02219-2>`_
 
 .. code-block:: bibtex
 
